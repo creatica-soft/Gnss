@@ -1,4 +1,4 @@
-#include "C:\Users\User\Documents\Arduino\libraries\Gnss\gnss.cpp"
+#include "gnss.cpp"
 #include <nz_dst.h>
 
 #define Gps Serial1
