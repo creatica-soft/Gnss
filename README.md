@@ -10,5 +10,11 @@ The first class template is very light because it does not include any textual o
 The second class template actually implements these functions. Therefore, it is much heavier because of numerous strings, which I tried to keep in the flash memory. They print out the parsed output from Gnss using the second class template parameter. 
 
 Because of very small UART buffer in Arduino board, you need to select UART speed for communication with GNSS and other devices carefully. I found that 9600 baud is ok for GNSS but the output device should have higher speed. I used 115200 for ESP8266 and Arduino console via HardwareSerial. Because GNSS sends lots of data, if you don't read them out in time from the Arduino buffer, the following GNSS data will overwrite the unread one and you'll get lots of checksum errors.
-  
+
+Refer to gnss.ino for numerous examples. Most of them are commented out. Just uncomment those that you want to use.
+
+platform.local.txt file should be copied over to where your arduino software is installed under hardware\arduino\avr. It specifies certain compiler (linker) flags necessary for sprintf() functions to display formatting properly (floating point support), namely
+
+compiler.c.elf.extra_flags=-Wl,-u,vfprintf -lprintf_flt -lm
+
 Please refer to the official u-blox M8 GNSS product description u-blox8-M8_ReceiverDescrProtSpec_(UBX-13003221)_Public.pdf for understanding its featues and functions.
