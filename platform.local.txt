@@ -1,0 +1,8 @@
+compiler.c.extra_flags=
+compiler.c.elf.extra_flags=-Wl,-u,vfprintf -lprintf_flt -lm
+compiler.S.extra_flags=
+compiler.cpp.extra_flags=
+#compiler.cpp.extra_flags=-mcall-prologues -fno-split-wide-types -finline-limit=3 -ffast-math
+compiler.ar.extra_flags=
+compiler.objcopy.eep.extra_flags=
+compiler.elf2hex.extra_flags=
