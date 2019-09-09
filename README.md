@@ -17,4 +17,4 @@ platform.local.txt file should be copied over to where your arduino software is 
 
 compiler.c.elf.extra_flags=-Wl,-u,vfprintf -lprintf_flt -lm
 
-Please refer to the official u-blox M8 GNSS product description u-blox8-M8_ReceiverDescrProtSpec_(UBX-13003221)_Public.pdf for understanding its featues and functions.
+Please refer to the official u-blox M8 GNSS product description u-blox8-M8_ReceiverDescrProtSpec_(UBX-13003221)_Public.pdf for understanding its features and functions.
