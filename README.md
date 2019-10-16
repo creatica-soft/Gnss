@@ -1,5 +1,5 @@
 # Gnss
-Arduino library for u-blox M8 UBX-M8030 GNSS (GPS GLONASS Galileo BeiDou) chip 
+Arduino and Raspberry Pi library for u-blox M8 UBX-M8030 GNSS (GPS GLONASS Galileo BeiDou) chip 
 
 This is probably the most complete u-blox library for Arduino. It supports both protocols: NMEA and UBX. It implements the majority of the functions up to and including the protocol version 18.
 
