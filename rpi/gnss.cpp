@@ -53,7 +53,7 @@ int Gnss::begin(const char * dev, speed_t baudRate) {
 	settings.c_cflag &= ~CSTOPB; //1 stop bit
 	settings.c_iflag &= ~(IXON | IXOFF | IXANY); //no software flow control
 	settings.c_cflag &= ~CRTSCTS; //no hardware flow control
-	settings.c_cc[VMIN] = 1; //minimum number of char to read
+	settings.c_cc[VMIN] = 0; //minimum number of char to read
 	settings.c_cc[VTIME] = 0; //timeout in decisec (3 sec)
 	if ((tcsetattr(fd, TCSANOW, &settings)) != 0) {
 		printf("error %d in setting dev %s attributes\n", errno, dev);
@@ -91,7 +91,7 @@ int Gnss::begin(const char * dev, speed_t baudRate) {
 }
 
 void Gnss::end() {
-	close(fd);
+	if (fd > 0) close(fd);
 }
 
 void Gnss::calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload) {
@@ -412,14 +412,14 @@ void Gnss::navOrb() {
 			case HEALTHY: printf("Healthy"); break;
 			case UNHEALTHY: printf("Unhealthy"); break;
 		}
-		printf("pos ");
+		printf("; pos ");
 		switch(p->svFlags.visibility) {
 			case UNKNOWN_VISIBILITY: printf("Unknown"); break;
 			case BELOW_HIRIZON: printf("Above Horizon"); break;
 			case ABOVE_HORIZON: printf("Below Horizon"); break;
 			case ABOVE_ELEVATION_THRESHOLD: printf("Above Elevation Threshold"); break;
 		}
-		printf("ephUsability ");
+		printf("; ephUsability ");
 		switch(p->ephFlags.Usability) {
 			case 31: printf("Unknown"); break;
 			case 30: printf(">450min"); break;
@@ -430,7 +430,7 @@ void Gnss::navOrb() {
 				printf("between %u and %u min", u1, u2); 
 				break;
 		}
-		printf("ephSource ");
+		printf("; ephSource ");
 		switch(p->ephFlags.Source) {
 			case 0: printf("N/A"); break;
 			case 1: printf("GNSS"); break;
@@ -439,7 +439,7 @@ void Gnss::navOrb() {
 				printf("other");
 				break;
 		}
-		printf("almUsability");
+		printf("; almUsability");
 		switch(p->almFlags.Usability) {
 			case 31: printf("Unknown"); break;
 			case 30: printf(">450days"); break;
@@ -450,7 +450,7 @@ void Gnss::navOrb() {
 				printf("between %u and %u days", u1, u2); 
 				break;
 		}
-		printf("almSource ");
+		printf("; almSource ");
 		switch(p->almFlags.Source) {
 			case 0: printf("N/A"); break;
 			case 1: printf("GNSS"); break;
@@ -459,7 +459,7 @@ void Gnss::navOrb() {
 				printf("other"); 
 				break;
 		}
-		printf("otherOrb ");
+		printf("; otherOrb ");
 		switch(p->otherFlags.Usability) {
 			case 31: printf("Unknown"); break;
 			case 30: printf(">450days"); break;
@@ -470,7 +470,7 @@ void Gnss::navOrb() {
 				printf("between %u and %u days", u1, u2); 
 				break;
 		}
-		printf("almSource ");
+		printf("; almSource ");
 		switch(p->otherFlags.Source) {
 			case 0: printf("N/A"); break;
 			case 1: printf("AssistNowOffline"); break;
@@ -479,8 +479,8 @@ void Gnss::navOrb() {
 				printf("other"); 
 				break;
 		}
+		printf("\n");
 	}
-	printf("\n");
 }
 
 void Gnss::navPosLlh() {
@@ -614,6 +614,7 @@ void Gnss::navSbas() {
 	if (p->services.corrections) strcat(r, "|corrections");
 	if (p->services.integrity) strcat(r, "|integrity");
 	if (p->services.testMode) strcat(r, "|testMode");
+	if (r[0] == 0) sprintf(r, "N/A");
 	printf("navSbas: iTOW %lu, geo %u, mode %s, sys %s, service %s: \n", p->iTOW, p->geo, m, g, r);
 	
 	for (uint8_t i = 0; i < p->cnt; i++) {
@@ -629,6 +630,7 @@ void Gnss::navSbas() {
 		if (sv->services.corrections) strcat(r, "|corrections");
 		if (sv->services.integrity) strcat(r, "|integrity");
 		if (sv->services.testMode) strcat(r, "|testMode");
+		if (r[0] == 0) sprintf(r, "N/A");
 		printf("svId %u, flags %u, status %u, sys %s, service %s, pseudoRange %dcm, ionspherCorr %dcm\n", sv->svId, sv->flags, sv->status, g, r, sv->prc, sv->ic);		
 	}
 }
@@ -990,8 +992,8 @@ void Gnss::cfgNav() {
 
 void Gnss::cfgOdo() {
   ODOCfg * cfg = (ODOCfg *)payload; //getCfgOdo();
-  char flags[96], profile[9], enabled[8], disabled[9];
-  memset(flags, 0, 96);
+  char flags[255], profile[9], enabled[8], disabled[9];
+  memset(flags, 0, 255);
   memset(profile, 0, 9);
   memset(enabled, 0, 8);
   memset(disabled, 0, 9);
@@ -1192,12 +1194,12 @@ void Gnss::cfgGeoFence() {
 
 void Gnss::cfgNmea() {
 	CfgNmea * p = (CfgNmea *)payload;
-	char talkerId[13], gsv[8], filter[96], flags[64], gnss[64];
-	memset(talkerId, 0, 13);
+	char talkerId[14], gsv[8], filter[128], flags[96], gnss[96];
+	memset(talkerId, 0, 14);
 	memset(gsv, 0, 8);
-	memset(filter, 0, 96);
-	memset(flags, 0, 64);
-	memset(gnss, 0, 64);
+	memset(filter, 0, 128);
+	memset(flags, 0, 96);
+	memset(gnss, 0, 96);
 
 	if (p->filter.failedFix) strcat(filter, "dispFailedFix");
 	if (p->filter.invalidFix) strcat(filter, "|dispInvalidFix");
@@ -1205,6 +1207,7 @@ void Gnss::cfgNmea() {
 	if (p->filter.invalidDate) strcat(filter, "|dispInvalidDate");
 	if (p->filter.invalidCog) strcat(filter, "|dispInvalidCOG");
 	if (p->filter.gpsOnly) strcat(filter, "|dispGPSonly");
+	if (filter[0] == 0) sprintf(filter, "none");
 	if (p->flags.compat) strcat(flags, "compatMode");
 	if (p->flags.consider) strcat(flags, "|consideringMode");
 	if (p->flags.limit82) strcat(flags, "|82charsLimit");
@@ -1214,6 +1217,7 @@ void Gnss::cfgNmea() {
 	if (p->gnssFilter.disableQzss) strcat(gnss, "|disableQzss");
 	if (p->gnssFilter.disableGlonass) strcat(gnss, "|disableGlonass");
 	if (p->gnssFilter.disableBeidou) strcat(gnss, "|disableBeidou");
+	if (gnss[0] == 0) sprintf(gnss, "none");
 	switch (p->mainTalkerId) {
 		case DEFAULT_TALKER_ID: sprintf(talkerId, "default"); break;
 		case GP_TALKER_ID: sprintf(talkerId, "GPS|SBAS|QZSS"); break;
@@ -1223,7 +1227,7 @@ void Gnss::cfgNmea() {
 		case GB_TALKER_ID: sprintf(talkerId, "BeiDou"); break;
 	}
 	if (p->gsvTalkerId) sprintf(gsv, "default"); else sprintf(gsv, "main");
-	printf("cfgNmea nmeaVersion %x, maxSVs %u, displayNonNmeaSVs %u, filter %s, flags %s, GNSS %s, talkerId %s, gsvTalkerId %s, dbsTalkerId %s\n", p->nmeaVersion, p->maxSV, p->displayNonNmeaSVs, filter, flags, gnss, talkerId, gsv, p->dbsTalkerId);
+	printf("cfgNmea nmeaVersion %x, maxSVs %u, displayNonNmeaSVs %u, filter %s, flags %s, Disabled GNSS %s, talkerId %s, gsvTalkerId %s, dbsTalkerId %s\n", p->nmeaVersion, p->maxSV, p->displayNonNmeaSVs, filter, flags, gnss, talkerId, gsv, p->dbsTalkerId);
 }
 
 void Gnss::monVer(uint8_t extensionsNumber) {
@@ -1296,9 +1300,9 @@ void Gnss::timTm() {
 
 void Gnss::timTp() {
   TimeTP * t = (TimeTP *)payload;
-  utcTime = t->weeks * ONE_DAY * 7 + (t->tow / 1000) - GPS_OFFSET;
+  utcTime = (uint32_t)(t->weeks) * ONE_DAY * 7 + (t->tow / 1000) - GPS_OFFSET;
   ttp = true;
-  char timeBase[64], timeRef[13], utcSource[15];
+  char timeBase[64], timeRef[13], utcSource[15], tt[32];
   memset(timeBase, 0, 64);
   memset(timeRef, 0, 13);
   memset(utcSource, 0, 15);
@@ -1331,28 +1335,25 @@ void Gnss::timTp() {
     case RAIM_NOT_ACTIVE: strcat(timeBase, "|RAIM_NOT_ACTIVE"); break;
     case RAIM_ACTIVE: strcat(timeBase, "|RAIM_ACTIVE"); break;
   }
-  printf("timeTP utcTime %s, tow %lums, subTOW %lums 2^-32, quatErr %ldps, weeks %u, timeBase %s\n", asctime(gmtime(&utcTime)), t->tow, t->subTOW, t->quantErr, t->weeks, timeBase);
+  strftime(tt, 32, "%c", localtime(&utcTime));
+  printf("timeTP utcTime %s, tow %lums, subTOW %lums 2^-32, quatErr %ldps, weeks %u, timeBase %s\n", tt, t->tow, t->subTOW, t->quantErr, t->weeks, timeBase);
 }
 
 void Gnss::logInfo() {
   LogInfo * log = (LogInfo *)payload; //getLogInfo();
   struct tm tm_time;
-  char flags[32], f2[10], f3[14], ot[25], nt[25];
-  memset(flags, 0, 32);
-  memset(f2, 0, 10);
-  memset(f3, 0, 14);
-  memset(ot, 0, 25);
-  memset(nt, 0, 25);
+  char flags[64], ot[32], nt[32];
+  memset(flags, 0, 64);
+  memset(ot, 0, 32);
+  memset(nt, 0, 32);
   time_t oldest = mktime(gps2tm(&(log->oldestDateTime), &tm_time));
-  gmtime_r(&oldest, &tm_time);
-  asctime_r(&tm_time, ot);
+  strftime(ot, 32, "%c", localtime(&oldest));
   time_t newest = mktime(gps2tm(&(log->newestDateTime), &tm_time));
-  gmtime_r(&newest, &tm_time);
-  asctime_r(&tm_time, nt);
+  strftime(nt, 32, "%c", localtime(&newest));
   if (log->flags.enabled) sprintf(flags, "enabled"); else sprintf(flags, "disabled");
-  if (log->flags.inactive) sprintf(f2, "|inactive"); else sprintf(f2, "|active");
-  if (log->flags.circular) sprintf(f3, "|circular"); else sprintf(f3, "|non-circular");
-  printf("logInfo: fileStoreCapacity %lu bytes, maxLogSize %lu bytes, logSize %lu bytes, numRecords %lu, oldest %s, newest %s, flags %s\n", log->fileStoreCapacity, log->currentMaxLogSize, log->currentLogSize, log->entryCount, ot, nt, strcat(strcat(flags, f2), f3));
+  if (log->flags.inactive) strcat(flags, "|inactive"); else strcat(flags, "|active");
+  if (log->flags.circular) strcat(flags, "|circular"); else strcat(flags, "|non-circular");
+  printf("logInfo: fileStoreCapacity %lu bytes, maxLogSize %lu bytes, logSize %lu bytes, numRecords %lu, oldest %s, newest %s, flags %s\n", log->fileStoreCapacity, log->currentMaxLogSize, log->currentLogSize, log->entryCount, ot, nt, flags);
 }
 
 void Gnss::logRetrievePos() {
@@ -1443,7 +1444,7 @@ void Gnss::nmeaGga() {
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
   //strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
-  printf("GNGGA %s %s %s, fix type: %u, numSVs: %u, hDOP %.2f, alt %.fm, geoidDiff %.fm, ageDC %luc, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType, data.numSV, (double)(data.hDOP), (double)(data.alt), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
+  printf("GNGGA %s %s %s, fix type: %u, numSVs: %u, hDOP %.2f, alt %.fm, geoidDiff %.fm, ageDC %lus, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType, data.numSV, (double)(data.hDOP), (double)(data.alt), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
 }
 
 //GNSS DOP and Active Satellites
@@ -1674,7 +1675,6 @@ bool Gnss::pollNoError(uint32_t timeout) {
 
 bool Gnss::ackNoError(uint32_t timeout) {
   uint32_t starttime = time(NULL);
-  starttime = time(NULL);
   while (difftime(time(NULL), starttime) < timeout) {
 	if (ready() && messageClass == UBX_ACK) {
 	  switch (error) {
@@ -2154,7 +2154,7 @@ void Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool
   conf.antConf = antConf ? 1 : 0;
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
-  conf.reserved2 = 0;
+  conf.reserved2 = 0L;
   config(conf, LOAD_CONFIG);
 }
 
