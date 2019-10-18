@@ -29,7 +29,7 @@ using namespace std;
 #undef UNIX_OFFSET
 #endif
 #define UNIX_OFFSET 946684800L
-
+#define GPS_UNIX_DIFF 315964800L
 #define GPS_OFFSET 630720000L // = UNIX_OFFSET - 315964800 (DIFF BETWEEN GPS and UNIX timestamps)
 
 const uint32_t maxWait = 3;

@@ -15,6 +15,7 @@ Gnss::Gnss() {
 	endOfNavEpoch = false;
 	iTOW = 0;
 	ttp = false;
+	if (setenv("TZ", "", 1) != 0) printf("setenv() error %d", errno);
 }
 
 void Gnss::tp() {
@@ -439,7 +440,7 @@ void Gnss::navOrb() {
 				printf("other");
 				break;
 		}
-		printf("; almUsability");
+		printf("; almUsability ");
 		switch(p->almFlags.Usability) {
 			case 31: printf("Unknown"); break;
 			case 30: printf(">450days"); break;
@@ -503,6 +504,7 @@ void Gnss::navPvt() {
 	printf("NatPvt local time: %s\n", tt);
 
     pps = false;
+	memset(time_tm, 0, sizeof(tm));
     utcTime = mktime(gps2tm(&(navPVT->dateTime), time_tm));
 	/*struct timeval tv;
 	tv.tv_sec = utcTime;
@@ -723,7 +725,12 @@ void Gnss::navTimeUtc() {
   NavTimeUtc * t = (NavTimeUtc *)payload;  
   if (t->valid.validTOW && t->valid.validWKN && t->valid.validUTC) {
     struct tm tm_time;
+	char tt[32];
+
 	time_t t1 = mktime(gps2tm(&(t->dateTime), &tm_time));
+	tm* time_tm = localtime(&t1);
+	strftime(tt, 32, "%c", time_tm);
+
 	char src[8];
 	memset(src, 0, 8);
     switch (t->valid.utcSource)
@@ -738,7 +745,7 @@ void Gnss::navTimeUtc() {
       case NTSC: sprintf(src, "NTSC"); break;
       case UNKNOWN_SOURCE: sprintf(src, "UNKNOWN"); break;
     }
-	printf("UTC: %s, source %s\n", asctime(gmtime(&t1)), src);
+	printf("UTC: %s, source %s\n", tt, src);
     
   }
 }
@@ -1300,7 +1307,16 @@ void Gnss::timTm() {
 
 void Gnss::timTp() {
   TimeTP * t = (TimeTP *)payload;
-  utcTime = (uint32_t)(t->weeks) * ONE_DAY * 7 + (t->tow / 1000) - GPS_OFFSET;
+  utcTime = (uint32_t)(t->weeks) * ONE_DAY * 7 + (t->tow / 1000) + GPS_UNIX_DIFF;
+
+  time_t ttt = time(NULL);
+  tm * gmt = gmtime(&ttt), * lt = localtime(&ttt);
+  char gmt_time[32], loc_time[32];
+  strftime(gmt_time, 32, "%c", gmt);
+  strftime(loc_time, 32, "%c", lt);
+  printf("utcTime %lu, time(NULL) %lu, diff %lu\n", utcTime, ttt, (ttt - utcTime)/3600);
+  printf("UTC time: %s, local time: %s\n", gmt_time, loc_time);
+
   ttp = true;
   char timeBase[64], timeRef[13], utcSource[15], tt[32];
   memset(timeBase, 0, 64);
@@ -1367,7 +1383,6 @@ void Gnss::logRetrievePos() {
 	memset(tt, 0, 32);
 	time_t t = mktime(gps2tm(&(rec->dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	//strftime(tt, 32, "%c", gps2tm(&(rec->dateTime), &tm_time));
 	printf("idx %lu: %s %s %s +/- %lum, alt %ldm above MSL, speed %lum/s, heading %ludeg, fixType %u, numSV %u\n", rec->index, tt, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), rec->hAcc / 1000, rec->altMSL / 1000, rec->gSpeed / 1000, rec->heading / 100000, rec->fixType, rec->numSV);
 }
 
@@ -1378,7 +1393,6 @@ void Gnss::logRetrievePosExtra() {
   LogRetrievePosExtra * odo = (LogRetrievePosExtra *)(payload); 
   time_t t = mktime(gps2tm(&(odo->dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  //strftime(tt, 32, "%c", gps2tm(&(odo->dateTime), &tm_time));
   printf("idx %lu: %s distance %lu\n", odo->index, tt, odo->distance);
 }
 
@@ -1389,7 +1403,6 @@ void Gnss::logRetrieveString() {
   LogRetrievestring * str = (LogRetrievestring *)(payload);
   time_t t = mktime(gps2tm(&(str->dateTime), &tm_time)); 
   strftime(tt, 32, "%c", localtime(&t));
-  //strftime(tt, 32, "%c", gps2tm(&(str->dateTime), &tm_time));
   char * ss = (char *)(payload + sizeof(LogRetrievestring));
   printf("idx %lu: %s %s\n", str->index, tt, ss);
 }
@@ -1423,7 +1436,6 @@ void Gnss::nmeaRmc() {
 	memset(tt, 0, 32);
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	//strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
 	printf("GNRMC: %s %s %s, SOG %.1fkt, COG %.fdeg, mv %.fdeg %c, fixType %c\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.SOG), (double)(data.COG), (double)(data.magVar), data.magVarEW, data.fixType);
 }
 
@@ -1443,7 +1455,6 @@ void Gnss::nmeaGga() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  //strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
   printf("GNGGA %s %s %s, fix type: %u, numSVs: %u, hDOP %.2f, alt %.fm, geoidDiff %.fm, ageDC %lus, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType, data.numSV, (double)(data.hDOP), (double)(data.alt), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
 }
 
@@ -1488,7 +1499,6 @@ void Gnss::nmeaGll() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  //strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
   printf("GNGLL: %s %s %s, fix type: %c\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType);
 }
 
@@ -1501,7 +1511,6 @@ void Gnss::nmeaGst() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  //strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
   printf("GNGST: %s, RangeRms %.fm, stdLat %.fm, stdLon %.fm, stdAlt %.fm\n", tt, (double)(data.rangeRms), (double)(data.stdLat), (double)(data.stdLon), (double)(data.stdAlt));
 }
 
@@ -1521,7 +1530,6 @@ void Gnss::nmeaGns() {
 	memset(tt, 0, 32);
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	//strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
 	printf("GNGNS: %s %s %s, atl %.fm, fixType[GPS] %c|fixType[GLO] %c, numSV %u, hDOP %.2f, geoidDiff %.fm, AgeDC %luc, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.alt), data.fixType[0], data.fixType[1], data.numSV, (double)(data.hDOP), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
 }
 
@@ -1534,7 +1542,6 @@ void Gnss::nmeaZda() {
 	tm tm_time;
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	//strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
 	printf("GNZDA: %s %d:%u\n", tt, data.utcOffsetHours, data.utcOffsetMinutes);
     
 }
@@ -1562,7 +1569,6 @@ void Gnss::pubxPosition() {
 	tm tm_time;
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	//strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
 	printf("pubxPosition: %s %s %s +/- %.fm, alt %.f +/- %.fm above ellipsoid, SOG %.1fkm/h, COG %u, vVel %.2fm/s, hDOP %.2f, vDOP %.2f, tDOP %.2f, ageDC %luc, numSV %u, fixType %s\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.hAcc), (double)(data.alt), (double)(data.vAcc), (double)(data.sog), data.cog, (double)(data.vVel), (double)(data.hDOP), (double)(data.vDOP), (double)(data.tDOP), data.ageDiffCorr, data.numSV, data.fixType);
 }
 
@@ -1613,7 +1619,6 @@ void Gnss::pubxTime() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  //strftime(tt, 32, "%c", gps2tm(&(data.dateTime), &tm_time));
   printf("PubxTime %s, utcTow: %lus, utcWeek: %lu, leapSec %u, leapSecSrc %c, clkBias %luns, clkDrift %luns/s, tpGran %luns\n", tt, data.utcTow, data.utcWeek, data.leapSec, data.leapSecSrc, data.clkBias, data.clkDrift, data.tpGran);
 }
 
