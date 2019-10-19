@@ -15,6 +15,8 @@ Gnss::Gnss() {
 	endOfNavEpoch = false;
 	iTOW = 0;
 	ttp = false;
+	loggingEnabled = false;
+	logFileExists = false;
 	if (setenv("TZ", "", 1) != 0) printf("setenv() error %d", errno);
 }
 
@@ -50,7 +52,7 @@ int Gnss::begin(const char * dev, speed_t baudRate) {
 		printf("cfsetspeed() error %d\n", errno);
 		return -1;
 	}
-
+	this->baudRate = baudRate;
 	settings.c_cflag &= ~CSTOPB; //1 stop bit
 	settings.c_iflag &= ~(IXON | IXOFF | IXANY); //no software flow control
 	settings.c_cflag &= ~CRTSCTS; //no hardware flow control
@@ -92,7 +94,11 @@ int Gnss::begin(const char * dev, speed_t baudRate) {
 }
 
 void Gnss::end() {
-	if (fd > 0) close(fd);
+	if (fd > 0) {
+		tcflush(fd, TCIOFLUSH);
+		close(fd);
+		fd = 0;
+	}
 }
 
 void Gnss::calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload) {
@@ -135,6 +141,7 @@ void Gnss::nmeaVerifyChecksum()  {
 
 bool Gnss::ready() {
   uint8_t c;
+  clock_t t = clock();
   while (read(fd, &c, 1) > 0) {
     if (!nmea) { //UBX message
       if (offset < 6) {
@@ -244,6 +251,16 @@ bool Gnss::ready() {
 				break;
 		}
 	}
+  }
+  t = ((clock() - t) * 1000000) / CLOCKS_PER_SEC;
+  //to avoid 100% CPU exhaustion, need to rest
+  switch (baudRate) {
+	case B9600: if (t < 937) usleep(937 - t); break;
+	case B19200: if (t < 468) usleep(468 - t); break;
+	case B38400: if (t < 234) usleep(234 - t); break;
+	case B57600: if (t < 156) usleep(156 - t); break;
+	case B115200: if (t < 78) usleep(78 - t); break;
+	case B230400: if (t < 39) usleep(39 - t); break;
   }
   return false;
 }
@@ -1682,15 +1699,16 @@ bool Gnss::ackNoError(uint32_t timeout) {
   uint32_t starttime = time(NULL);
   while (difftime(time(NULL), starttime) < timeout) {
 	if (ready() && messageClass == UBX_ACK) {
-	  switch (error) {
-	  	case NO_ERROR: if (messageId == ACK_ACK) {
-			UbxAck * ack  = (UbxAck *)(payload);
-			if (ack->classId == pollMessageClass && ack->messageId == pollMessageId) return true;
-			else break;
-		} else return false; //ACK_NAK
-		case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
-		case OUT_OF_MEMORY: printf("out of memory\n"); return false;
-	  }
+		UbxAck* ack = (UbxAck*)(payload);
+		switch (error) {
+	  		case NO_ERROR: 
+				if (ack->classId == pollMessageClass && ack->messageId == pollMessageId) {
+					if (messageId == ACK_ACK) return true;
+					else return false;//ACK_NAK
+				} else break;
+			case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
+			case OUT_OF_MEMORY: printf("out of memory\n"); return false;
+		}
 	}
   }
   printf("ack timeout\n");
@@ -1731,11 +1749,12 @@ bool Gnss::setDynamicModel(DynModel model, uint32_t timeout) {
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->dynModel != model) {
 	  cfgNav->dynModel = model;
 	  cfgNav->mask.dyn = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1755,11 +1774,12 @@ bool Gnss::setUtcStandard(UtcStandard standard, uint32_t timeout) {
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->utcStandard != standard) {
 	  cfgNav->utcStandard = standard;
 	  cfgNav->mask.utcMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1779,11 +1799,12 @@ bool Gnss::setFixMode(FixMode fixMode, uint32_t timeout) {
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->fixMode != fixMode) {
 	  cfgNav->fixMode = fixMode;
 	  cfgNav->mask.posFixMode = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1805,12 +1826,13 @@ bool Gnss::setFixedAlt(int32_t fixedAlt, uint32_t fixedAltVar, uint32_t timeout)
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->fixedAlt != fixedAlt || cfgNav->fixedAltVar != fixedAltVar) {
 	  cfgNav->fixedAlt = fixedAlt;
 	  cfgNav->fixedAltVar = fixedAltVar;
 	  cfgNav->mask.posMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1832,12 +1854,13 @@ bool Gnss::setDop(uint16_t posDOP, uint16_t timeDOP, uint32_t timeout) {
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   cfgNav->pDOP = posDOP;
   cfgNav->tDOP = timeDOP;
   cfgNav->mask.posMask = 1;
   cfgNav->mask.timeMask = 1;
-  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -1858,12 +1881,13 @@ bool Gnss::setAccuracy(uint16_t posAccuracy, uint16_t timeAccuracy, uint32_t tim
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   cfgNav->pAcc = posAccuracy;
   cfgNav->tAcc = timeAccuracy;
   cfgNav->mask.posMask = 1;
   cfgNav->mask.timeMask = 1;
-  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -1884,12 +1908,13 @@ bool Gnss::setCnoThreshold(uint8_t cnoThreshold, uint8_t cnoThresholdNumSVs, uin
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->cnoThreshold != cnoThreshold || cfgNav->cnoThresholdNumSVs != cnoThresholdNumSVs) {
 	  cfgNav->cnoThreshold = cnoThreshold;
 	  cfgNav->cnoThresholdNumSVs = cnoThresholdNumSVs;
 	  cfgNav->mask.cnoThreshold = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1911,12 +1936,13 @@ bool Gnss::setStaticHoldThresholds(uint8_t staticHoldThreshold, uint8_t staticHo
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->staticHoldThreshold != staticHoldThreshold || cfgNav->staticHoldMaxDistance != staticHoldMaxDistance) {
 	  cfgNav->staticHoldThreshold = staticHoldThreshold;
 	  cfgNav->staticHoldMaxDistance = staticHoldMaxDistance;
 	  cfgNav->mask.staticHoldMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1936,11 +1962,12 @@ bool Gnss::setMinElev(int8_t minElev, uint32_t timeout) {
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->minElev != minElev) {
 	  cfgNav->minElev = minElev;
 	  cfgNav->mask.minElev = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -1960,11 +1987,12 @@ bool Gnss::setDgnssTimeout(int8_t dgnssTimeout, uint32_t timeout) {
   CfgNav * cfgNav = NULL;
   poll(UBX_CFG, CFG_NAV5);
   if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
- 
+  else return false;
+
   if (cfgNav->dgnssTimeout != dgnssTimeout) {
 	  cfgNav->dgnssTimeout = dgnssTimeout;
 	  cfgNav->mask.dgpsMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, payloadLength, (uint8_t *)cfgNav);
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -2002,7 +2030,20 @@ char * Gnss::getErrMsg(DebugLevel debugLevel, uint32_t timeout) {
 
 CfgPrt * Gnss::getCfgPrt(Port portId, uint32_t timeout) {
   poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
-  if (pollNoError(timeout))	return (CfgPrt *)payload;
+  if (pollNoError(timeout)) {
+	  CfgPrt* p = (CfgPrt*)payload;
+	  switch (p->baudRate) {
+		case BAUD_RATE_4800: baudRate = B4800; break;
+		case BAUD_RATE_9600: baudRate = B9600; break;
+		case BAUD_RATE_19200: baudRate = B19200; break;
+		case BAUD_RATE_38400: baudRate = B38400; break;
+		case BAUD_RATE_57600: baudRate = B57600; break;
+		case BAUD_RATE_115200: baudRate = B115200; break;
+		case BAUD_RATE_230400: baudRate = B230400; break;
+		//case BAUD_RATE_460800: baudRate = B460800; break;
+	  }
+	  return (CfgPrt*)payload;
+  }
   return NULL;
 }
 
@@ -2016,14 +2057,15 @@ bool Gnss::setCfgPms(PowerModes mode, uint8_t period, uint8_t onTime, uint32_t t
   PowerMode * pMode = NULL;
   poll(UBX_CFG, CFG_PMS);
   if (pollNoError(timeout)) pMode = (PowerMode *)(payload);
- 
+  else return false;
+
   if (pMode->powerMode != mode || pMode->period != period || pMode->onTime != onTime) {
 	  if (period > 0 && period <= 5) return false;
 	  if ((period > 5 || onTime > 0) && mode != INTERVAL_POWER_MODE) return false;
 	  pMode->powerMode = mode;
 	  pMode->period = period;
 	  pMode->onTime = onTime;
-	  poll(UBX_CFG, CFG_PMS, payloadLength, (uint8_t *)pMode);
+	  poll(UBX_CFG, CFG_PMS, sizeof(PowerMode), (uint8_t *)pMode);
 	  if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -2039,6 +2081,7 @@ bool Gnss::setCfgPm(uint8_t maxStartupStateDuration, uint32_t udpatePeriod, uint
   CfgPm * pMode = NULL;
   poll(UBX_CFG, CFG_PM2);
   if (pollNoError(timeout)) pMode = (CfgPm *)(payload);
+  else return false;
   pMode->maxStartupStateDuration = maxStartupStateDuration;
   pMode->updatePeriod = udpatePeriod;
   pMode->searchPeriod = searchPeriod;
@@ -2047,7 +2090,7 @@ bool Gnss::setCfgPm(uint8_t maxStartupStateDuration, uint32_t udpatePeriod, uint
   pMode->minAcqTime = minAcqTime;
   pMode->extintInactivity = extintInactivity;
   pMode->flags = flags;
-  poll(UBX_CFG, CFG_PM2, payloadLength, (uint8_t *)pMode);
+  poll(UBX_CFG, CFG_PM2, sizeof(pMode), (uint8_t *)pMode);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -2058,13 +2101,14 @@ CfgRxm * Gnss::getCfgRxm(uint32_t timeout) {
   return NULL;
 }
 
-bool Gnss::setCfgRxm(CfgRxmLpMode mode, int32_t timeout) {
+bool Gnss::setCfgRxm(CfgRxmLpMode mode, uint32_t timeout) {
   CfgRxm * pMode = NULL;
   poll(UBX_CFG, CFG_RXM);
   if (pollNoError(timeout)) pMode = (CfgRxm *)(payload);
+  else return false;
   if (pMode->lpMode != mode) {
 	pMode->lpMode = mode;
-	poll(UBX_CFG, CFG_RXM, payloadLength, (uint8_t *)pMode);
+	poll(UBX_CFG, CFG_RXM, sizeof(CfgRxm), (uint8_t *)pMode);
 	if (ackNoError(timeout)) return true;
   } else return true;
   return false;
@@ -2074,6 +2118,7 @@ bool Gnss::setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMas
   CfgPrt * prtCfg = NULL;
   poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
   if (pollNoError(timeout)) prtCfg = (CfgPrt *)(payload);
+  else return false;
   prtCfg->baudRate = rate;
   prtCfg->mode.charLen = mode.charLen;
   prtCfg->mode.parity = mode.parity;
@@ -2084,12 +2129,12 @@ bool Gnss::setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMas
   prtCfg->outProtoMask.outUbx = outMask.outUbx;
   prtCfg->outProtoMask.outNmea = outMask.outNmea;
   prtCfg->flags.extendedTimeout = extendedTxTimeout ? 1 : 0;
-  poll(UBX_CFG, CFG_PRT, payloadLength, (uint8_t *)prtCfg);
+  poll(UBX_CFG, CFG_PRT, sizeof(CfgPrt), (uint8_t *)prtCfg);
   if (ackNoError(timeout)) return true;
   return false;
 }
 
-void Gnss::config(ConfMask mask, ConfigType type) {
+bool Gnss::config(ConfMask mask, ConfigType type, uint32_t timeout) {
   ConfigAllDevs conf;
   switch (type)
   {
@@ -2098,9 +2143,11 @@ void Gnss::config(ConfMask mask, ConfigType type) {
   	  case LOAD_CONFIG: memset(&(conf.clearMask), 0, sizeof(ConfMask)); memset(&(conf.saveMask), 0, sizeof(ConfMask)); conf.loadMask = mask; break;
   }
   poll(UBX_CFG, CFG_CFG, sizeof(ConfigAllDevs), (uint8_t *)&conf);
+  if (ackNoError(timeout)) return true;
+  return false;
 }
 
-void Gnss::config(ConfMask mask, ConfigType type, Device dev) {
+bool Gnss::config(ConfMask mask, ConfigType type, Device dev, uint32_t timeout) {
   ConfigDev conf;
   switch (type)
   {
@@ -2110,9 +2157,11 @@ void Gnss::config(ConfMask mask, ConfigType type, Device dev) {
   }
   conf.device = dev;
   poll(UBX_CFG, CFG_CFG, sizeof(ConfigDev), (uint8_t *)&conf);
+  if (ackNoError(timeout)) return true;
+  return false;
 }
 
-void Gnss::factoryReset(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf) {
+bool Gnss::defaultConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf, uint32_t timeout) {
   ConfMask conf;
   conf.ioPort = ioPort ? 1 : 0;
   conf.msgConf = msgConf ? 1 : 0;
@@ -2126,10 +2175,13 @@ void Gnss::factoryReset(bool ioPort, bool msgConf, bool infMsg, bool navConf, bo
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
   conf.reserved2 = 0;
-  config(conf, DEFAULT_CONFIG);
+  if (config(conf, DEFAULT_CONFIG, timeout)) {
+	  if (!config(conf, LOAD_CONFIG, timeout)) return false;
+  } else return false;
+  return true;
 }
 
-void Gnss::saveConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf) {
+bool Gnss::saveConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf, uint32_t timeout) {
   ConfMask conf;
   conf.ioPort = ioPort ? 1 : 0;
   conf.msgConf = msgConf ? 1 : 0;
@@ -2143,10 +2195,11 @@ void Gnss::saveConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
   conf.reserved2 = 0;
-  config(conf, SAVE_CONFIG);
+  if (!config(conf, SAVE_CONFIG, timeout)) return false;
+  return true;
 }
 
-void Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf) {
+bool Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf, uint32_t timeout) {
   ConfMask conf;
   conf.ioPort = ioPort ? 1 : 0;
   conf.msgConf = msgConf ? 1 : 0;
@@ -2160,7 +2213,43 @@ void Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
   conf.reserved2 = 0L;
-  config(conf, LOAD_CONFIG);
+  if (!config(conf, LOAD_CONFIG, timeout)) return false;
+  return true;
+}
+
+void Gnss::cfgRst(StartType type, ResetMode mode) {
+	CfgRst rset;
+	rset.navBbrMask = type.mask;
+	rset.resetMode = mode;
+	poll(UBX_CFG, CFG_RST, sizeof(CfgRst), (uint8_t*)&rset);
+}
+
+void Gnss::stopGnss() {
+	StartType type;
+	type.start = HOT_START;
+	cfgRst(type, GNSS_STOP);
+}
+
+void Gnss::startGnss() {
+	StartType type;
+	type.start = HOT_START;
+	cfgRst(type, GNSS_START);
+}
+
+void Gnss::resetGnss() {
+	StartType type;
+	type.start = HOT_START;
+	cfgRst(type, SOFTWARE_RESET_GNSS_ONLY);
+}
+
+void Gnss::reset(bool soft, bool afterShutdown) {
+	StartType type;
+	type.start = HOT_START;
+	if (soft) cfgRst(type, SOFTWARE_RESET);
+	else {
+		if (afterShutdown) cfgRst(type, HARDWARE_RESET_AFTER_SHUTDOWN);
+		else cfgRst(type, HARDWARE_RESET);
+	}
 }
 
 CfgMsg * Gnss::getCfgMsg(uint8_t msgClass, uint8_t msgId, uint32_t timeout) {
@@ -2175,7 +2264,8 @@ bool Gnss::setCfgMsg(uint8_t msgClass, uint8_t msgId, uint8_t rate, uint32_t tim
   uint16_t pload = ((uint16_t)(msgId) << 8) | msgClass;
   poll(UBX_CFG, CFG_MSG, sizeof(uint16_t), (uint8_t *)&pload);
   if (pollNoError(timeout))	cfgMsg = (CfgMsg *)payload;
-  
+  else return false;
+
   if (cfgMsg->rate[COM1] != rate) {
 	  CfgMsgCOM1 cfgMsg2;
 	  cfgMsg2.msgClass = msgClass;
@@ -2197,6 +2287,7 @@ bool Gnss::setCfgOdo(OdoFlags flags, OdoProfile profile, uint8_t maxSpeed, uint8
   ODOCfg * odoCfg = NULL;
   poll(UBX_CFG, CFG_ODO);
   if (pollNoError(timeout)) odoCfg = (ODOCfg *)(payload);
+  else return false;
   odoCfg->flags.ODOenabled = flags.ODOenabled;
   odoCfg->flags.COGenabled = flags.COGenabled;
   odoCfg->flags.outputLPvelocity = flags.outputLPvelocity;
@@ -2205,7 +2296,7 @@ bool Gnss::setCfgOdo(OdoFlags flags, OdoProfile profile, uint8_t maxSpeed, uint8
   odoCfg->cogMaxSpeed = maxSpeed; 
   odoCfg->cogMaxPosAccuracy = maxPosAccuracy;
   odoCfg->velLPgain = velGain; odoCfg->cogLPgain = COGgain;
-  poll(UBX_CFG, CFG_ODO, payloadLength, (uint8_t *)odoCfg);
+  poll(UBX_CFG, CFG_ODO, sizeof(ODOCfg), (uint8_t *)odoCfg);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -2220,10 +2311,11 @@ bool Gnss::setCfgSbas(CfgSbasUsage usage, uint32_t scanMode1, uint8_t scanMode2,
   CfgSbas * cfg = NULL;
   poll(UBX_CFG, CFG_SBAS);
   if (pollNoError(timeout)) cfg = (CfgSbas *)(payload);
+  else return false;
   cfg->usage = usage;
   cfg->scanMode1 = scanMode1;
   cfg->scanMode2 = scanMode2;
-  poll(UBX_CFG, CFG_SBAS, payloadLength, (uint8_t *)cfg);
+  poll(UBX_CFG, CFG_SBAS, sizeof(CfgSbas), (uint8_t *)cfg);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -2238,6 +2330,7 @@ bool Gnss::setCfgNmea(CfgNmeaFilter filter, uint8_t nmeaVersion, uint8_t maxSVs,
   CfgNmea * cfg = NULL;
   poll(UBX_CFG, CFG_NMEA);
   if (pollNoError(timeout)) cfg = (CfgNmea *)(payload);
+  else return false;
   cfg->filter = filter;
   cfg->nmeaVersion = nmeaVersion;
   cfg->flags = flags;
@@ -2247,36 +2340,65 @@ bool Gnss::setCfgNmea(CfgNmeaFilter filter, uint8_t nmeaVersion, uint8_t maxSVs,
   cfg->gsvTalkerId = gsvTalkerIdIsMain ? 1 : 0;
   cfg->dbsTalkerId[0] = dbsTalkerId[0];
   cfg->dbsTalkerId[1] = dbsTalkerId[1];
-  poll(UBX_CFG, CFG_SBAS, payloadLength, (uint8_t *)cfg);
+  poll(UBX_CFG, CFG_SBAS, sizeof(CfgNmea), (uint8_t *)cfg);
   if (ackNoError(timeout)) return true;
   return false;
 }
 
 //LOG messages
-
 CfgLogFilter * Gnss::getCfgLogFilter(uint32_t timeout) {
   poll(UBX_CFG, CFG_LOGFILTER);
-  if (pollNoError(timeout))	return (CfgLogFilter *)payload;
+  if (pollNoError(timeout)) {
+	CfgLogFilter * lf = (CfgLogFilter*)payload;
+	loggingEnabled = lf->flags.recordingEnabled;
+	return (CfgLogFilter*)payload;
+  }
   return NULL;
 }
 
 bool Gnss::setCfgLogFilter(uint8_t minInterval, uint8_t timeThreshold, uint8_t speedThreshold, uint8_t positionThreshold, CfgLogFilterFlags flags, uint32_t timeout) {
   CfgLogFilter * cfgLogFilter = NULL;
   poll(UBX_CFG, CFG_LOGFILTER);
-  if (pollNoError(timeout))	cfgLogFilter = (CfgLogFilter *)payload;
+  if (pollNoError(timeout))	cfgLogFilter = (CfgLogFilter*)payload;
+  else return false;
   cfgLogFilter->minInterval = minInterval;
   cfgLogFilter->timeThreshold = timeThreshold;
   cfgLogFilter->speedThreshold = speedThreshold;
   cfgLogFilter->positionThreshold = positionThreshold;
   cfgLogFilter->flags = flags;
-  poll(UBX_CFG, CFG_LOGFILTER, payloadLength, (uint8_t *)cfgLogFilter);
+  poll(UBX_CFG, CFG_LOGFILTER, sizeof(cfgLogFilter), (uint8_t*)cfgLogFilter);
   if (ackNoError(timeout)) return true;
   return false;
 }
 
+bool Gnss::enableLogging(uint8_t interval, uint32_t timeout) {
+	CfgLogFilterFlags flags;
+	flags.recordingEnabled = 1;
+	flags.psmOncePerWakeUpEnabled = 0;
+	flags.applyAllFilterSettings = 1;
+	uint8_t minInterval = 0, timeThreshold = interval, speedThreshold = 0, positionThreshold = 0;
+	if (setCfgLogFilter(minInterval, timeThreshold, speedThreshold, positionThreshold, flags, timeout)) return true;
+	else return false;
+}
+
+bool Gnss::disableLogging(uint32_t timeout) {
+	CfgLogFilterFlags flags;
+	flags.recordingEnabled = 0;
+	flags.psmOncePerWakeUpEnabled = 0;
+	flags.applyAllFilterSettings = 0;
+	uint8_t minInterval = 0, timeThreshold = 0, speedThreshold = 0, positionThreshold = 0;
+	if (setCfgLogFilter(minInterval, timeThreshold, speedThreshold, positionThreshold, flags, timeout)) return true;
+	else return false;
+}
+
 LogInfo * Gnss::getLogInfo(uint32_t timeout) {
   poll(UBX_LOG, LOG_INFO);
-  if (pollNoError(timeout))	return (LogInfo *)payload;
+  if (pollNoError(timeout)) {
+	LogInfo * logInfo = (LogInfo*)payload;
+	loggingEnabled = logInfo->flags.enabled == 1 ? true : false;
+	logFileExists = logInfo->flags.inactive == 1 ? false : true;
+	return logInfo;
+  }
   return NULL;
 }
 
@@ -2313,7 +2435,7 @@ uint32_t Gnss::logFind(DateTime dateTime, uint32_t timeout) {
     } else return 0xFFFFFFFF;
 }
 
-bool Gnss::logMsg(char * msg, uint8_t len, uint32_t timeout) {
+bool Gnss::logMsg(const char * msg, uint8_t len, uint32_t timeout) {
   poll(UBX_LOG, LOG_STRING, len, (uint8_t *)msg);
   if (ackNoError(timeout)) return true;
   return false;
@@ -2356,21 +2478,22 @@ bool Gnss::setGnss(MajorGnss gnss, bool enableSBAS, bool enableIMES, uint32_t ti
   GnssCfg * c = NULL;
   poll(UBX_CFG, CFG_GNSS);
   if (pollNoError(timeout)) {
-	gnssConf = (GnssConf *)(payload);
-	for (uint8_t i = 0; i < gnssConf->numConfigBlocks; i++) {
-		c = (GnssCfg *)(payload + sizeof(GnssConf) + sizeof(GnssCfg) * i);
-		switch (i) {
-			case 0: c->flags.enabled = gnss.Gps; break;
-			case 1: c->flags.enabled = gnss.Gps; break; //QZSS should be enabled or disabled togather with GPS
-			case 2: c->flags.enabled = gnss.Galileo; break;
-			case 3: c->flags.enabled = gnss.BeiDou; break;
-			case 4: c->flags.enabled = gnss.Glonass; break;
-			case 5: c->flags.enabled = enableSBAS; break;
-			case 6: c->flags.enabled = enableIMES; break;
-		}
-	}
+	  gnssConf = (GnssConf*)(payload);
+	  for (uint8_t i = 0; i < gnssConf->numConfigBlocks; i++) {
+		  c = (GnssCfg*)(payload + sizeof(GnssConf) + sizeof(GnssCfg) * i);
+		  switch (i) {
+		  case 0: c->flags.enabled = gnss.Gps; break;
+		  case 1: c->flags.enabled = gnss.Gps; break; //QZSS should be enabled or disabled togather with GPS
+		  case 2: c->flags.enabled = gnss.Galileo; break;
+		  case 3: c->flags.enabled = gnss.BeiDou; break;
+		  case 4: c->flags.enabled = gnss.Glonass; break;
+		  case 5: c->flags.enabled = enableSBAS; break;
+		  case 6: c->flags.enabled = enableIMES; break;
+		  }
+	  }
   }
-  poll(UBX_CFG, CFG_GNSS, payloadLength, (uint8_t *)gnssConf);
+  else return false;
+  poll(UBX_CFG, CFG_GNSS, sizeof(GnssConf), (uint8_t *)gnssConf);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -2384,11 +2507,12 @@ NavRate * Gnss::getNavRate(uint32_t timeout) {
 bool Gnss::setNavRate(uint16_t measurementRate, uint16_t navSolRate, TimeRef timeRef, uint32_t timeout) {
   NavRate * rate = NULL;
   poll(UBX_CFG, CFG_RATE);
-  if (pollNoError(timeout)) rate = (NavRate *)(payload);
+  if (pollNoError(timeout)) rate = (NavRate*)(payload);
+  else return false;
   rate->rate = measurementRate; //ms
   rate->navSolRate = navSolRate; //cycles - number of measurements for each NavSol, max 127.
   rate->timeRef = timeRef; 
-  poll(UBX_CFG, CFG_RATE, payloadLength, (uint8_t *)rate);
+  poll(UBX_CFG, CFG_RATE, sizeof(NavRate), (uint8_t *)rate);
   if (ackNoError(timeout)) return true;
   return false;
 }
@@ -2402,7 +2526,8 @@ TimePulse * Gnss::getTimePulse(uint32_t timeout) {
 bool Gnss::setTimePulse(uint32_t pulse_period, uint32_t pulse_len, uint32_t pulse_period_locked, uint32_t pulse_len_locked, int32_t delay, TimePulseFlags flags, uint32_t timeout) {
   TimePulse * tp = NULL;
   poll(UBX_CFG, CFG_TP5);
-  if (pollNoError(timeout)) tp = (TimePulse *)(payload);
+  if (pollNoError(timeout)) tp = (TimePulse*)(payload);
+  else return false;
   tp->pulsePeriod = pulse_period;
   tp->pulseLen = pulse_len; 
   tp->pulsePeriodLocked = pulse_period_locked;
@@ -2416,7 +2541,7 @@ bool Gnss::setTimePulse(uint32_t pulse_period, uint32_t pulse_len, uint32_t puls
   tp->flags.alignToTOW = flags.alignToTOW;
   tp->flags.gridUtcGnss = flags.gridUtcGnss;
   tp->flags.syncMode = flags.syncMode;
-  poll(UBX_CFG, CFG_TP5, payloadLength, (uint8_t *)tp);
+  poll(UBX_CFG, CFG_TP5, sizeof(TimePulse), (uint8_t *)tp);
   if (ackNoError(timeout)) return true;
   return false;
 }

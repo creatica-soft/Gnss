@@ -596,11 +596,6 @@ struct TxReady {
 };
 
 enum BaudRate : uint32_t {
-	BAUD_RATE_110 = 110,
-	BAUD_RATE_300 = 300,
-	BAUD_RATE_600 = 600,
-	BAUD_RATE_1200 = 1200,
-	BAUD_RATE_2400 = 2400,
 	BAUD_RATE_4800 = 4800,
 	BAUD_RATE_9600 = 9600,
 	BAUD_RATE_14400 = 14400,
@@ -608,8 +603,8 @@ enum BaudRate : uint32_t {
 	BAUD_RATE_38400 = 38400,
 	BAUD_RATE_57600 = 57600,
 	BAUD_RATE_115200 = 115200,
-	BAUD_RATE_128000 = 128000,
-	BAUD_RATE_256000 = 256000
+	BAUD_RATE_230400 = 230400,
+	BAUD_RATE_460800 = 460800
 };
 
 struct InProtoMask {
@@ -1593,29 +1588,63 @@ struct TimTm {
 	uint32_t accEst;
 };
 
-class null {};
+//On chip BBR(battery backed RAM) sections to clear. The following Special Sets apply:
+//0x0000 Hot start
+//0x0001 Warm start
+//0xFFFF Cold start
+struct NavBbrMask {
+	uint16_t eph : 1; //Ephemeris
+	uint16_t alm : 1; //Almanac
+	uint16_t health : 1; //Health
+	uint16_t klob : 1; //Klobuchar parameters
+	uint16_t pos : 1; //Position
+	uint16_t clkd : 1; //Clock Drift
+	uint16_t osc : 1; //Oscillator Parameter
+	uint16_t utc : 1; //UTC Correction + GPS Leap Seconds Parameters
+	uint16_t rtc : 1; //RTC
+	uint16_t reserved : 6;
+	uint16_t aop : 1; //Autonomous Orbit Parameters
+};
+
+enum StartTypes : uint16_t {
+	HOT_START,
+	WARM_START,
+	COLD_START = 0xFFFF
+};
+
+union StartType {
+	NavBbrMask mask; 
+	StartTypes start;
+};
+
+enum ResetMode : uint8_t {
+	HARDWARE_RESET,
+	SOFTWARE_RESET,
+	SOFTWARE_RESET_GNSS_ONLY,
+	HARDWARE_RESET_AFTER_SHUTDOWN = 4,
+	GNSS_STOP = 8,
+	GNSS_START = 9
+};
+
+struct CfgRst {
+	NavBbrMask navBbrMask;
+	ResetMode resetMode;
+	uint8_t reserved;
+};
 
 class Gnss {
 public:
   int fd;
-  uint8_t checksum[2];
-  uint16_t offset;
-  uint8_t messageClass;
-  uint8_t pollMessageClass;
-  uint8_t messageId;
-  uint8_t pollMessageId;
-  uint16_t payloadLength;
-  uint16_t pollPayloadLength;
-  uint8_t * payload;
-  uint8_t * pollPayload;
+  uint8_t checksum[2], messageClass, pollMessageClass, messageId, pollMessageId, * payload, * pollPayload;
+  uint16_t offset, payloadLength, pollPayloadLength;
   uint32_t iTOW; //set when UBX-NAV-EOE marker is received (end of Nav Epoch - after all NAV and NMEA enabled messages)
 				 //endOfNavEpoch field is set to true at this time. It is reset on the next message
   Error error;
-  bool nmea, nmeaChecksumNext, nmeaValid, endOfNavEpoch;
+  bool nmea, nmeaChecksumNext, nmeaValid, endOfNavEpoch, loggingEnabled, logFileExists;
   volatile bool pps, ttp;
-  string nmeaPayload, nmeaChecksum;
+  string nmeaPayload, nmeaChecksum, nmeaDate;
   time_t utcTime;
-  string nmeaDate;
+  speed_t baudRate;
   Gnss();
   void tp();
   int begin(const char* dev, speed_t baudRate);
@@ -1714,11 +1743,17 @@ public:
   char * getErrMsg(DebugLevel debugLevel, uint32_t timeout = maxWait); //UBX-INF-* debug messages
   CfgPrt * getCfgPrt(Port portId, uint32_t timeout = maxWait); //UBX-CFG-PRT
   bool setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMask, OutProtoMask outMask, bool extendedTxTimeout = false, uint32_t timeout = maxWait); //UBX-CFG-PRT
-  void config(ConfMask mask, ConfigType type); //UBX-CFG-CFG
-  void config(ConfMask mask, ConfigType type, Device dev); //UBX-CFG-CFG
-  void factoryReset(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true);
-  void saveConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true);
-  void loadConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true);
+  bool config(ConfMask mask, ConfigType type, uint32_t timeout = maxWait); //UBX-CFG-CFG
+  bool config(ConfMask mask, ConfigType type, Device dev, uint32_t timeout = maxWait); //UBX-CFG-CFG
+  bool defaultConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
+  bool saveConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
+  bool loadConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
+  void cfgRst(StartType type, ResetMode mode); //UBX-CFG-RST
+  void stopGnss(); //The receiver will not be restarted, but will stop any GNSS related processing
+  void startGnss(); //Starts all GNSS tasks
+  void resetGnss(); //only restarts the GNSS tasks, without reinitializing the full system or 
+												//reloading any stored configuration.
+  void reset(bool soft = true, bool afterShutdown = true); //hardware or software reset. Reset afterShutdown applies to hardware reset only
   CfgMsg * getCfgMsg(uint8_t msgClass, uint8_t msgId, uint32_t timeout = maxWait); //UBX-CFG-MSG
   bool setCfgMsg(uint8_t msgClass, uint8_t msgId, uint8_t rate, uint32_t timeout = maxWait); //UBX-CFG-MSG
   PowerMode * getCfgPms(uint32_t timeout = maxWait); //UBX-CFG-PMS
@@ -1726,7 +1761,7 @@ public:
   CfgPm * getCfgPm(uint32_t timeout = maxWait); //UBX-CFG-PM2
   bool setCfgPm(uint8_t maxStartupStateDuration, uint32_t udpatePeriod, uint32_t searchPeriod, uint32_t gridOffset, uint16_t onTime, uint16_t minAcqTime, uint32_t extintInactivity, CfgPmFlags flags, uint32_t timeout = maxWait); //UBX-CFG-PM2
   CfgRxm * getCfgRxm(uint32_t timeout = maxWait); //UBX-CFG-RXM
-  bool setCfgRxm(CfgRxmLpMode mode, int32_t timeout = maxWait); //UBX-CFG-RXM
+  bool setCfgRxm(CfgRxmLpMode mode, uint32_t timeout = maxWait); //UBX-CFG-RXM
   CfgSbas * getCfgSbas(uint32_t timeout = maxWait); //UBX-CFG-SBAS
   bool setCfgSbas(CfgSbasUsage usage, uint32_t scanMode1, uint8_t scanMode2, uint32_t timeout = maxWait); //UBX-CFG-SBAS
   CfgNmea * getCfgNmea(uint32_t timeout = maxWait); //UBX-CFG-NMEA
@@ -1740,7 +1775,9 @@ public:
   bool createLog(LogSize logSize, uint32_t userDefinedSize = 0, bool circular = true, uint32_t timeout = maxWait); //UBX-LOG-CREATE
   bool eraseLog(uint32_t timeout = maxWait); //UBX-LOG-ERASE
   uint32_t logFind(DateTime dateTime, uint32_t timeout = maxWait); //UBX-LOG-FINDTIME
-  bool logMsg(char * msg, uint8_t len, uint32_t timeout = maxWait); //UBX-LOG-STRING
+  bool logMsg(const char * msg, uint8_t len, uint32_t timeout = maxWait); //UBX-LOG-STRING
+  bool enableLogging(uint8_t interval, uint32_t timeout = maxWait);
+  bool disableLogging(uint32_t timeout = maxWait);
   void infMsg(const char * infLevel); //UBX-INF-XXX
   GnssConf * getGnss(uint32_t timeout = maxWait); //UBX-CFG-GNSS
   bool setGnss(MajorGnss gnss, bool enableSBAS, bool enableIMES, uint32_t timeout = maxWait); //UBX-CFG-GNSS
