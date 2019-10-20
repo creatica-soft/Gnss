@@ -17,7 +17,7 @@ Gnss::Gnss() {
 	ttp = false;
 	loggingEnabled = false;
 	logFileExists = false;
-	if (setenv("TZ", "", 1) != 0) printf("setenv() error %d", errno);
+	if (setenv("TZ", "", 1) != 0) printf("setenv() error: %s", strerror(errno));
 }
 
 void Gnss::tp() {
@@ -38,18 +38,18 @@ void Gnss::tp() {
 int Gnss::begin(const char * dev, speed_t baudRate) {
 	fd = open(dev, O_RDWR | O_NOCTTY | O_SYNC);
 	if (fd < 0) {
-		printf("error %d opening device %s\n", errno, dev); return -1;
+		printf("error opening device %s: %s\n", dev, strerror(errno)); return -1;
 	}
 	struct termios settings;
 	memset(&settings, 0, sizeof(termios));
 	if (tcgetattr(fd, &settings) != 0) {
-		printf("tcgetattr() error: %d\n", errno);
+		printf("tcgetattr() error: %s\n", strerror(errno));
 		return -1;
 	}
 	cfmakeraw(&settings); //switch to raw packet processing
 
 	if (cfsetspeed(&settings, baudRate) != 0) {
-		printf("cfsetspeed() error %d\n", errno);
+		printf("cfsetspeed() error: %s\n", strerror(errno));
 		return -1;
 	}
 	this->baudRate = baudRate;
@@ -59,12 +59,12 @@ int Gnss::begin(const char * dev, speed_t baudRate) {
 	settings.c_cc[VMIN] = 0; //minimum number of char to read
 	settings.c_cc[VTIME] = 0; //timeout in decisec (3 sec)
 	if ((tcsetattr(fd, TCSANOW, &settings)) != 0) {
-		printf("error %d in setting dev %s attributes\n", errno, dev);
+		printf("error in setting dev %s attributes: %s\n", dev, strerror(errno));
 		return -1;
 	}
-
-	if (tcflush(fd, TCIFLUSH) != 0) {
-		printf("error %d flushing input queue of device %s\n", errno, dev);
+	sleep(1);
+	if (tcflush(fd, TCIOFLUSH) != 0) {
+		printf("error flushing input and output queues of device %s: %s\n", dev, strerror(errno));
 		return -1;
 	}
 
@@ -126,7 +126,7 @@ void Gnss::nmeaVerifyChecksum()  {
 	uint16_t len = nmeaPayload.length();
 	const char * cstring = nmeaPayload.c_str();
 
-	for (uint8_t i = 0; i < len; i++ ) {
+	for (uint8_t i = 0; i < len; i++) {
 		x ^= cstring[i];
 	}
 
@@ -142,62 +142,72 @@ void Gnss::nmeaVerifyChecksum()  {
 bool Gnss::ready() {
   uint8_t c;
   clock_t t = clock();
+  string suffix = "";
   while (read(fd, &c, 1) > 0) {
-    if (!nmea) { //UBX message
+    //if (!nmea) { //UBX message
       if (offset < 6) {
 			switch (offset) {
 				case 0:
-				    //printf("%X ", c);
-					if (c == NMEA_START) { nmea = true; nmeaChecksumNext = false; nmeaPayload = ""; nmeaChecksum = ""; continue; }
-					if (c != SYNC_CHARS[0]) continue;
+					//if (nmea && (c != '\r')) printf("%c", c); else printf("%X ", c); 
+					if (c == NMEA_START) { 
+						nmea = true; 
+						nmeaChecksumNext = false; nmeaPayload = ""; nmeaChecksum = ""; 
+						//continue; 
+					}
+					else if (c == SYNC_CHARS[0]) {
+						offset = 1; nmea = false; continue;
+					}
 					break;
 				case 1:
-				    //printf("%X", c); 
+					printf("%X ", c);
 					if (c != SYNC_CHARS[1]) {
 						offset = 0;
-						continue;
-					}
+						//continue;
+					} else offset = 2;
 					break;					
 				case 2:
-					//printf(" Receiving UBX...");
-				    //printf(" msgCls %X", c);  
+					printf(" Receiving UBX...");
+				    printf(" msgCls %X", c);  
 					messageClass = c;
+					offset = 3;
 					break;
 				case 3:					
-				    //printf(", msgId %X", c);  
+				    printf(", msgId %X", c);  
 					messageId = c;
+					offset = 4;
 					break;
-				case 4: payloadLength = c; break;
+				case 4: payloadLength = c; offset = 5; break;
 				case 5: 
 					payloadLength |= (((uint16_t)c) << 8); 
-					//printf(", len %u, payload: ", payloadLength);
+					printf(", len %u, payload: ", payloadLength);
 					payload = (uint8_t *)realloc(payload, payloadLength); 
 					if (payload == NULL && payloadLength > 0) { offset = 0; error = OUT_OF_MEMORY; return true;}
+					offset = 6;
 					break;
 			}			
-	        offset++;
+	        //offset++;
 	  }
       else { //offset >= 6
 			if ((offset < (payloadLength + 6))) {
 				payload[offset - 6] = c;
-				//printf("%X ", c);
+				printf("%X ", c);
 				offset++;
 			}
 			else if (offset == payloadLength + 6) {
 				calculateChecksum(messageClass, messageId, payloadLength, payload);
-				//printf(" calculated checksum0 %X, checksum1 %X", checksum[0], checksum[1]);
+				printf(" calculated checksum0 %X, checksum1 %X", checksum[0], checksum[1]);
 				if (c == checksum[0]) offset++;
 				else {
 					offset = 0;
-					//printf("checksum0 %X - wrong checksum0: %X", checksum[0], c);
+					printf("checksum0 %X - wrong checksum0: %X", checksum[0], c);
 					error = CHECKSUM_ERROR; 
 					return true;
 				}
-				//printf(" receieved chksum0 %X", c);
+				printf(" receieved chksum0 %X", c);
 			}
 			else if (offset == payloadLength + 7) {
 			  offset = 0;
-			  //printf(", chksum1 %X\n", c);
+			  printf(", chksum1 %X\n", c);
 			  if (c == checksum[1])	{
 				if (messageClass == UBX_NAV && messageId == NAV_EOE) { 
 					endOfNavEpoch = true; 
@@ -207,62 +217,154 @@ bool Gnss::ready() {
 				return true;
 			  }
 			  else {
-				//printf("checksum1 %X - wrong checksum1: %X\n", checksum[1], c);
+				printf("checksum1 %X - wrong checksum1: %X\n", checksum[1], c);
 				error = CHECKSUM_ERROR; 
 				return true;
 			  }
 			}
 	  }
-	} else { //nmea message
+	//} else { //nmea message
+	  if (nmea) {
 		string cls = "", msgId = "";
 		switch (c) {
-		   case '*': nmeaChecksumNext = true; break;
-		   case '\r': break;
+		   case '$': continue;
+		   case '*': nmeaChecksumNext = true; suffix = "*"; break;
+		   case '\r': suffix += "\r"; break;
 		   case '\n': 
-			nmea = false; 
-			nmeaVerifyChecksum(); 
-			//printf("%s\n", nmeaPayload;
-			if (nmeaValid) {
-				cls = nmeaPayload.substr(2,3);
-				if (cls == "RMC") { messageClass = UBX_NMEA; messageId = NMEA_RMC; }
-				else if (cls == "VTG") { messageClass = UBX_NMEA; messageId = NMEA_VTG; }
-				else if (cls == "GGA") { messageClass = UBX_NMEA; messageId = NMEA_GGA; }
-				else if (cls == "GSA") { messageClass = UBX_NMEA; messageId = NMEA_GSA; }
-				else if (cls == "GSV") { messageClass = UBX_NMEA; messageId = NMEA_GSV; }
-				else if (cls == "GLL") { messageClass = UBX_NMEA; messageId = NMEA_GLL; }
-				else if (cls == "GST") { messageClass = UBX_NMEA; messageId = NMEA_GST; }
-				else if (cls == "VLW") { messageClass = UBX_NMEA; messageId = NMEA_VLW; }
-				else if (cls == "GNS") { messageClass = UBX_NMEA; messageId = NMEA_GNS; }
-				else if (cls == "ZDA") { messageClass = UBX_NMEA; messageId = NMEA_ZDA; }
-				cls = nmeaPayload.substr(0,4);
-				if (cls == "PUBX") { messageClass = UBX_PUBX; 
-					msgId = nmeaPayload.substr(5, 2);
-					if (msgId == "41") messageId = PUBX_CONFIG;
-					else if (msgId == "00") messageId = PUBX_POSITION;
-					else if (msgId == "40") messageId = PUBX_RATE;
-					else if (msgId == "03") messageId = PUBX_SVSTATUS;
-					else if (msgId == "04") messageId = PUBX_TIME;
+			nmea = false;
+			//if (suffix.rfind("*" + nmeaChecksum + "\r") != string::npos) {
+				suffix = "";
+				nmeaVerifyChecksum();
+				printf("%s*%s\n", nmeaPayload.c_str(), nmeaChecksum.c_str());
+				if (nmeaValid) {
+					cls = nmeaPayload.substr(2, 3);
+					//printf("\'%s\'\n", cls.c_str());
+					if (cls == "RMC") { messageClass = UBX_NMEA; messageId = NMEA_RMC; }
+					else if (cls == "VTG") { messageClass = UBX_NMEA; messageId = NMEA_VTG; }
+					else if (cls == "GGA") { messageClass = UBX_NMEA; messageId = NMEA_GGA; }
+					else if (cls == "GSA") { messageClass = UBX_NMEA; messageId = NMEA_GSA; }
+					else if (cls == "GSV") { messageClass = UBX_NMEA; messageId = NMEA_GSV; }
+					else if (cls == "GLL") { messageClass = UBX_NMEA; messageId = NMEA_GLL; }
+					else if (cls == "GST") { messageClass = UBX_NMEA; messageId = NMEA_GST; }
+					else if (cls == "VLW") { messageClass = UBX_NMEA; messageId = NMEA_VLW; }
+					else if (cls == "GNS") { messageClass = UBX_NMEA; messageId = NMEA_GNS; }
+					else if (cls == "ZDA") { messageClass = UBX_NMEA; messageId = NMEA_ZDA; }
+					else if (cls == "TXT") { messageClass = UBX_NMEA; messageId = NMEA_TXT; }
+					cls = nmeaPayload.substr(0, 4);
+					if (cls == "PUBX") {
+						messageClass = UBX_PUBX;
+						msgId = nmeaPayload.substr(5, 2);
+						if (msgId == "41") messageId = PUBX_CONFIG;
+						else if (msgId == "00") messageId = PUBX_POSITION;
+						else if (msgId == "40") messageId = PUBX_RATE;
+						else if (msgId == "03") messageId = PUBX_SVSTATUS;
+						else if (msgId == "04") messageId = PUBX_TIME;
+					}
+					return true;
 				}
-				return true; 
-			} else { printf("nmea checksum error: %s\n", nmeaPayload); return false; }
+				else { printf("nmea checksum error: %s\n", nmeaPayload); return false; }
+			//}
 		    default: 
 				if (!nmeaChecksumNext) nmeaPayload += char(c); 
-				else nmeaChecksum += char(c);
+				else {
+					nmeaChecksum += char(c); suffix += char(c);
+				}
 				break;
 		}
-	}
+	  }
   }
-  t = ((clock() - t) * 1000000) / CLOCKS_PER_SEC;
-  //to avoid 100% CPU exhaustion, need to rest
+  t = ((clock() - t) * 1000000) / CLOCKS_PER_SEC; //execution delay from the start of the function in microseconds
+												  //substract it from theoretical delay between characters arriving to
+                                                  //serial port at a given baudrate (bit per sec): 
+                                                  // delay in seconds = 1/(baudrate/10bits); where 10bits = 1 start + 8 data + 1 stop
+  //to avoid 100% CPU exhaustion, need to rest and share
   switch (baudRate) {
-	case B9600: if (t < 937) usleep(937 - t); break;
-	case B19200: if (t < 468) usleep(468 - t); break;
-	case B38400: if (t < 234) usleep(234 - t); break;
-	case B57600: if (t < 156) usleep(156 - t); break;
-	case B115200: if (t < 78) usleep(78 - t); break;
-	case B230400: if (t < 39) usleep(39 - t); break;
+	case B4800: if (t < 2083) usleep(2083 - t); break;
+	case B9600: if (t < 1042) usleep(1042 - t); break;
+	case B19200: if (t < 520) usleep(520 - t); break;
+	case B38400: if (t < 260) usleep(260 - t); break;
+	case B57600: if (t < 174) usleep(174 - t); break;
+	case B115200: if (t < 87) usleep(87 - t); break;
+	case B230400: if (t < 43) usleep(43 - t); break;
   }
   return false;
+}
+
+void Gnss::poll(uint8_t msgClass, uint8_t msgId, uint16_t payload_length, uint8_t* pload) {
+	pollMessageClass = msgClass;
+	pollMessageId = msgId;
+	pollPayload = pload;
+	pollPayloadLength = payload_length;
+	calculateChecksum(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload);
+	uint16_t packetSize = payload_length + 8;
+	uint8_t* buffer = (uint8_t*)malloc(packetSize);
+	if (buffer == NULL) {
+		printf("poll(): malloc() error - buffer is null, packet size %u\n", packetSize); return;
+	}
+	buffer[0] = SYNC_CHARS[0];
+	buffer[1] = SYNC_CHARS[1];
+	buffer[2] = msgClass;
+	buffer[3] = msgId;
+	buffer[4] = payload_length & 0xFF;
+	buffer[5] = payload_length >> 8;
+
+	//printf("Sending... msgCls %X", pollMessageClass);
+	//printf(", msgID %X", pollMessageId);
+	//printf(", len0 %X", ttt);
+	//printf(", len1 %X", ttt);
+	//printf(", len %u", pollPayloadLength);
+	if (pload != NULL)
+	{
+		//printf(", payload: ");
+		for (uint16_t i = 0; i < payload_length; i++)
+		{
+			buffer[i + 6] = pload[i];
+			//printf(" %X", pload[i]);
+		}
+	}
+	//printf(", cksum0 %X", checksum[0]);
+	//printf(", cksum1 %X\n", checksum[1]);
+	buffer[payload_length + 6] = checksum[0];
+	buffer[payload_length + 7] = checksum[1];
+	if (write(fd, buffer, packetSize) != packetSize) printf("poll(): write() error %d\n", errno);
+	tcdrain(fd);
+	free(buffer);
+}
+
+bool Gnss::pollNoError(uint32_t timeout) {
+	uint32_t starttime = time(NULL);
+	while (difftime(time(NULL), starttime) < timeout) {
+		if (ready() && messageClass == pollMessageClass && messageId == pollMessageId) {
+			switch (error) {
+				case NO_ERROR: return true;
+				case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
+				case OUT_OF_MEMORY: printf("out of memory\n"); return false;
+			}
+		}
+	}
+	printf("poll timeout\n");
+	return false;
+}
+
+bool Gnss::ackNoError(uint32_t timeout) {
+	uint32_t starttime = time(NULL);
+	while (difftime(time(NULL), starttime) < timeout) {
+		if (ready() && messageClass == UBX_ACK) {
+			UbxAck* ack = (UbxAck*)(payload);
+			switch (error) {
+				case NO_ERROR:
+					if (ack->classId == pollMessageClass && ack->messageId == pollMessageId) {
+						if (messageId == ACK_ACK) return true;
+						else return false;//ACK_NAK
+					}
+					else break;
+				case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
+				case OUT_OF_MEMORY: printf("out of memory\n"); return false;
+			}
+		}
+	}
+	printf("ack timeout\n");
+	return false;
 }
 
 void Gnss::get() {
@@ -356,6 +458,7 @@ void Gnss::get() {
 					case NMEA_VLW: nmeaVlw(); break;
 					case NMEA_GNS: nmeaGns(); break;
 					case NMEA_ZDA: nmeaZda(); break;
+					case NMEA_TXT: nmeaTxt(); break;
 				} break;
 			case UBX_PUBX:
 				switch(messageId) {
@@ -1563,24 +1666,22 @@ void Gnss::nmeaZda() {
     
 }
 
-void Gnss::pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId, bool autoBauding) {
-	uint8_t x = 0;
-	char s[255];
-	memset(s, 0, 255);
-	
-	uint16_t im = inMask.inUbx | (inMask.inNmea << 1) | (inMask.inRtcm << 2), om = outMask.outUbx | (outMask.outNmea << 1);
-	uint8_t ab = autoBauding ? 1 : 0;
-	sprintf(s, "PUBX,41,%u,%.4u,%.4u,%lu,%u\n", (uint8_t)portId, im, om, (uint32_t)rate, ab);
-
-	for (uint8_t i = 0; i < strlen(s); i++ ) {
-		x ^= s[i];
+void Gnss::nmeaTxt() {
+	GNTXT data;
+	char t[8] = "";
+	getGNTXT(&data);
+	switch (data.msgType) {
+		case 0: sprintf(t, "Error"); break;
+		case 1: sprintf(t, "Warning"); break;
+		case 2: sprintf(t, "Notice"); break;
+		case 7: sprintf(t, "User"); break;
 	}
-	printf("$%s*%X\n", s, x);
+	printf("GNTXT: message %u out of %u \"%s! %s\"\n", data.msgNum, data.numMsg, t, data.text);
 }
 
 void Gnss::pubxPosition() {
-    PubxPosition data;
-    getPubxPosition(&data);
+	PubxPosition data;
+	getPubxPosition(&data);
 	char tt[32];
 	memset(tt, 0, 32);
 	tm tm_time;
@@ -1589,9 +1690,27 @@ void Gnss::pubxPosition() {
 	printf("pubxPosition: %s %s %s +/- %.fm, alt %.f +/- %.fm above ellipsoid, SOG %.1fkm/h, COG %u, vVel %.2fm/s, hDOP %.2f, vDOP %.2f, tDOP %.2f, ageDC %luc, numSV %u, fixType %s\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.hAcc), (double)(data.alt), (double)(data.vAcc), (double)(data.sog), data.cog, (double)(data.vVel), (double)(data.hDOP), (double)(data.vDOP), (double)(data.tDOP), data.ageDiffCorr, data.numSV, data.fixType);
 }
 
-void Gnss::pubxRate(char * msgId, uint8_t rateCom1, uint8_t rateCom2, uint8_t rateDDC, uint8_t rateUsb, uint8_t rateSpi) {
+void Gnss::pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId, bool autoBauding) {
 	uint8_t x = 0;
-	char s[255];
+	char s[255], ss[255];
+	memset(s, 0, 255);
+	
+	uint16_t im = inMask.inUbx | (inMask.inNmea << 1) | (inMask.inRtcm << 2), om = outMask.outUbx | (outMask.outNmea << 1);
+	uint8_t ab = autoBauding ? 1 : 0;
+	sprintf(s, "PUBX,41,%u,%.4u,%.4u,%lu,%u", (uint8_t)portId, im, om, (uint32_t)rate, ab);
+
+	for (uint8_t i = 0; i < strlen(s); i++ ) {
+		x ^= s[i];
+	}
+	sprintf(ss, "$%s*%X\r\n", s, x);
+	//printf(ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	tcdrain(fd);
+}
+
+void Gnss::pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2, uint8_t rateDDC, uint8_t rateUsb, uint8_t rateSpi) {
+	uint8_t x = 0;
+	char s[255], ss[255];
 	memset(s, 0, 255);
 	
 	sprintf(s, "PUBX,40,%s,%u,%u,%u,%u,%u,%u", msgId, rateDDC, rateCom1, rateCom2, rateUsb, rateSpi, 0);
@@ -1599,8 +1718,10 @@ void Gnss::pubxRate(char * msgId, uint8_t rateCom1, uint8_t rateCom2, uint8_t ra
 	for (uint8_t i = 0; i < strlen(s); i++ ) {
 		x ^= s[i];
 	}
-
-	printf("$%s*%X\n", s, x);
+	sprintf(ss, "$%s*%X\r\n", s, x);
+	//printf(ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	tcdrain(fd);
 }
 
 void Gnss::pubxSvStatus() {
@@ -1638,83 +1759,6 @@ void Gnss::pubxTime() {
   strftime(tt, 32, "%c", localtime(&t));
   printf("PubxTime %s, utcTow: %lus, utcWeek: %lu, leapSec %u, leapSecSrc %c, clkBias %luns, clkDrift %luns/s, tpGran %luns\n", tt, data.utcTow, data.utcWeek, data.leapSec, data.leapSecSrc, data.clkBias, data.clkDrift, data.tpGran);
 }
-
-void Gnss::poll(uint8_t msgClass, uint8_t msgId, uint16_t payload_length, uint8_t * pload) {
-	  pollMessageClass = msgClass;
-	  pollMessageId = msgId;
-	  pollPayload = pload;
-	  pollPayloadLength = payload_length;
-	  calculateChecksum(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload);
-	  uint16_t packetSize = payload_length + 8;
-	  uint8_t* buffer = (uint8_t *)malloc(packetSize);
-	  if (buffer == NULL) {
-		  printf("poll(): malloc() error - buffer is null, packet size %u\n", packetSize); return;
-	  }
-	  buffer[0] = SYNC_CHARS[0];
-	  buffer[1] = SYNC_CHARS[1];
-	  buffer[2] = msgClass;
-	  buffer[3] = msgId;
-	  buffer[4] = payload_length & 0xFF;
-	  buffer[5] = payload_length >> 8;
-
-  	  //printf("Sending... msgCls %X", pollMessageClass);
-  	  //printf(", msgID %X", pollMessageId);
-	  //printf(", len0 %X", ttt);
-	  //printf(", len1 %X", ttt);
-	  //printf(", len %u", pollPayloadLength);
-	  if (pload != NULL)
-	  {
-		  //printf(", payload: ");
-	  	  for (uint16_t i = 0; i < payload_length; i++)
-		  {
-			  buffer[i + 6] = pload[i];
-			  //printf(" %X", pload[i]);
-		  }
-	  }
-	  //printf(", cksum0 %X", checksum[0]);
-	  //printf(", cksum1 %X\n", checksum[1]);
-	  buffer[payload_length + 6] = checksum[0];
-	  buffer[payload_length + 7] = checksum[1];
-	  if (write(fd, buffer, packetSize) != packetSize) printf("poll(): write() error %d\n", errno);
-	  tcdrain(fd);
-	  free(buffer);
-}
-
-bool Gnss::pollNoError(uint32_t timeout) {
-	uint32_t starttime = time(NULL);
-	while (difftime(time(NULL), starttime) < timeout) {
-		if (ready() && messageClass == pollMessageClass && messageId == pollMessageId) {	  
-			switch (error) {
-	  			case NO_ERROR: return true;
-				case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
-				case OUT_OF_MEMORY: printf("out of memory\n"); return false;
-			}
-		}
-	}
-	printf("poll timeout\n");
-	return false;
-}
-
-bool Gnss::ackNoError(uint32_t timeout) {
-  uint32_t starttime = time(NULL);
-  while (difftime(time(NULL), starttime) < timeout) {
-	if (ready() && messageClass == UBX_ACK) {
-		UbxAck* ack = (UbxAck*)(payload);
-		switch (error) {
-	  		case NO_ERROR: 
-				if (ack->classId == pollMessageClass && ack->messageId == pollMessageId) {
-					if (messageId == ACK_ACK) return true;
-					else return false;//ACK_NAK
-				} else break;
-			case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
-			case OUT_OF_MEMORY: printf("out of memory\n"); return false;
-		}
-	}
-  }
-  printf("ack timeout\n");
-  return false;
-}
-
 
 //UBX messages
 MonVer * Gnss::getVersion(uint32_t timeout) {
@@ -2119,6 +2163,7 @@ bool Gnss::setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMas
   poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
   if (pollNoError(timeout)) prtCfg = (CfgPrt *)(payload);
   else return false;
+  printf("baud rate: %lu\n", rate);
   prtCfg->baudRate = rate;
   prtCfg->mode.charLen = mode.charLen;
   prtCfg->mode.parity = mode.parity;
@@ -2224,27 +2269,27 @@ void Gnss::cfgRst(StartType type, ResetMode mode) {
 	poll(UBX_CFG, CFG_RST, sizeof(CfgRst), (uint8_t*)&rset);
 }
 
-void Gnss::stopGnss() {
+void Gnss::stopGnss(StartTypes startType) {
 	StartType type;
-	type.start = HOT_START;
+	type.start = startType;
 	cfgRst(type, GNSS_STOP);
 }
 
-void Gnss::startGnss() {
+void Gnss::startGnss(StartTypes startType) {
 	StartType type;
-	type.start = HOT_START;
+	type.start = startType;
 	cfgRst(type, GNSS_START);
 }
 
-void Gnss::resetGnss() {
+void Gnss::resetGnss(StartTypes startType) {
 	StartType type;
-	type.start = HOT_START;
+	type.start = startType;
 	cfgRst(type, SOFTWARE_RESET_GNSS_ONLY);
 }
 
-void Gnss::reset(bool soft, bool afterShutdown) {
+void Gnss::reset(bool soft, bool afterShutdown, StartTypes startType) {
 	StartType type;
-	type.start = HOT_START;
+	type.start = startType;
 	if (soft) cfgRst(type, SOFTWARE_RESET);
 	else {
 		if (afterShutdown) cfgRst(type, HARDWARE_RESET_AFTER_SHUTDOWN);
@@ -3005,6 +3050,22 @@ void Gnss::getGNZDA(GNZDA * data) {
 		}		
 	}
 	nmeaToUtc(&(data->dateTime), date, time);
+}
+
+void Gnss::getGNTXT(GNTXT* data) {
+	string txt[5];
+
+	split(txt, 5, nmeaPayload);
+
+	for (uint8_t i = 1; i < 5; i++) {
+		if (txt[i] != "")
+			switch (i) {
+				case 1: data->numMsg = stoi(txt[i], nullptr, 10); break;
+				case 2: data->msgNum = stoi(txt[i], nullptr, 10); break;
+				case 3: data->msgType = stoi(txt[i], nullptr, 10); break;
+				case 4: data->text = txt[i].c_str(); break;
+			}
+	}
 }
 
 void Gnss::getPubxPosition(PubxPosition * data) {

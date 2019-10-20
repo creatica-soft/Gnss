@@ -7,8 +7,8 @@
 using namespace std;
 
 volatile bool getLog, gpsDataAvailable;
-const Port gnssPort = COM1;
 const uint8_t navRate = 1;
+const Port gnssPort = COM1;
 int gnssPortRate = 9600;
 
 //const char* dev = "/dev/ttyAMA3";
@@ -108,46 +108,46 @@ void retrieveLogs(uint32_t idx, uint32_t count) {
 	if (!gps.logRetrieve(idx, count)) { printf("logRetrieve failed\n"); return; }
 }
 
-int8_t resetGnss(const char * dev) {
-	printf("Resetting...\n");
-	gps.defaultConfig();
-	sleep(1);
-	printf("Connecting to GNSS at default baud rate 9600...\n");
-	gps.end();
-	gps.begin(dev, B9600);
-	CfgPrt* cfgPrt = gps.getCfgPrt(gnssPort);
-	if (cfgPrt != NULL) {
-		gps.cfgPrt();
-		printf(" success\n");
+int tRateToI(speed_t r) {
+	switch (r) {
+		case B4800: gnssPortRate = 4800; break;
+		case B9600: gnssPortRate = 9600; break;
+		case B19200: gnssPortRate = 19200; break;
+		case B38400: gnssPortRate = 38400; break;
+		case B57600: gnssPortRate = 57600; break;
+		case B115200: gnssPortRate = 115200; break;
+		case B230400: gnssPortRate = 230400; break;
 	}
-	else {
-		printf(" failed\n"); return -1;
-	}
-	return 0;
+	return gnssPortRate;
 }
 
+
 int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
+	speed_t rates[7] = { B4800, B9600, B19200, B38400, B57600, B115200, B230400 };
 	CfgMsg* cfg = NULL;
 	CfgPrt* cfgPrt = NULL;
 	getLog = false;
 	gps = Gnss();
 	printf("TOPGNSS\n");
 	printf("Connecting to GNSS on %s at %d baud\n", dev, gnssPortRate);
-	gps.begin(dev, rate);
-	cfgPrt = gps.getCfgPrt(gnssPort);
+	gps.begin(dev, gnssPortRate);
+	cfgPrt = gps.getCfgPrt();
 	if (cfgPrt != NULL) printf(" connected\n");
 	else {
-		if (rate != B9600) {
-			printf(" failed. Re-trying with default baud rate 9600...\n");
-			gps.end();
-			gps.begin(dev, B9600);
-			cfgPrt = gps.getCfgPrt(gnssPort);
-			if (cfgPrt != NULL) printf(" connected.\n");
-			else {
-				printf(" failed. Sorry, giving up...\n"); return -1;
+		for (int i = 0; i < 7; i++) {
+			if (rate != rates[i]) {
+				printf(" failed. Re-trying with %d baud rate...\n", tRateToI(rates[i]));
+				gps.end();
+				gps.begin(dev, rates[i]);
+				//writing at wrong baud rate causes Gnss receiver to get disabled after 100 or frame errors
+				//instead of calling getCfgPrt(), we should passively listen for something meaninful
+				cfgPrt = gps.getCfgPrt();
+				
+				if (cfgPrt != NULL) {
+					printf(" connected.\n"); break;
+				} else if (i == 6) { printf(" sorry, giving up...\n"); return -1; }
 			}
 		}
-		else { printf(" failed.\n"); return -1; }
 	}
 	if (reset) {
 		printf("Reseting...\n");
@@ -155,7 +155,7 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 		sleep(3);
 	}
 	if (gps.baudRate != rate) {
-		printf("Setting desired rate %d...\n", gnssPortRate);
+		printf("Setting desired rate %d...\n", tRateToI(rate));
 		switch (rate) {
 			case B4800: cfgPrt->baudRate = BAUD_RATE_4800; break;
 			case B9600: cfgPrt->baudRate = BAUD_RATE_9600; break;
@@ -169,9 +169,9 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 		{
 			printf(" success\n");
 			gps.end();
-			sleep(3);
+			sleep(10);
 			gps.begin(dev, rate);
-			cfgPrt = gps.getCfgPrt(gnssPort);
+			cfgPrt = gps.getCfgPrt();
 			if (cfgPrt != NULL) {
 				printf("Connected at new rate %d\n", gnssPortRate);
 				if (gps.saveConfig()) printf("Config is saved\n");
@@ -180,12 +180,10 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 			else {
 				printf("Failed to connect at new rate %d\n", gnssPortRate); return -1;
 			}
-		}
-		else {
+		} else {
 			printf(" failed.\n"); return -1;
 		}
 	}
-
 
 	wiringPiSetup();
 	wiringPiISR(INTERRUPT_PIN, INT_EDGE_RISING, tp);
@@ -194,7 +192,7 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	else printf("getVersion() is NULL\n");
 	sleep(1);
 	/*
-	if (gps.getCfgPrt(gnssPort) != NULL) gps.cfgPrt();
+	if (gps.getCfgPrt() != NULL) gps.cfgPrt();
 	else printf("getCfgPrt() is NULL\n");
 	sleep(1);
 	if (gps.getCfgPm() != NULL) gps.cfgPm();
@@ -210,12 +208,12 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	else printf("getGnss() is NULL\n");
 	sleep(1);
 
-	printf("getCfgInf(UBX, COM1)");
-	if (gps.getCfgInf(UBX, COM1) != NULL) gps.cfgInf();
+	printf("getCfgInf(UBX, gnssPort)");
+	if (gps.getCfgInf(UBX, gnssPort) != NULL) gps.cfgInf();
 	else printf(" failed\n");
 	sleep(1);
-	printf("getCfgInf(NMEA, COM1)");
-	if (gps.getCfgInf(NMEA, COM1) != NULL) gps.cfgInf();
+	printf("getCfgInf(NMEA, gnssPort)");
+	if (gps.getCfgInf(NMEA, gnssPort) != NULL) gps.cfgInf();
 	else printf(" failed\n");
 	sleep(1);
 	printf("getCfgNav()");
@@ -591,22 +589,24 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	  else printf(" failed\n");
 	*/
 
-	/*InProtoMask inMask;
+	InProtoMask inMask;
 	OutProtoMask outMask;
 	inMask.inUbx = 1; inMask.inNmea = 1; inMask.inRtcm = 1;
 	outMask.outUbx = 1; outMask.outNmea = 1;
-	gps.pubxConfig(BAUD_RATE_14400, inMask, outMask);
+	gps.pubxConfig(BAUD_RATE_57600, inMask, outMask);
 	gps.end();
-	gps.begin(dev, B14400);*/
+	gps.begin(dev, B57600);
 
-	/*uint8_t rateDDC = 0, rateCOM1 = 0, rateCOM2 = 0, rateUSB = 0, rateSPI = 0;
-	gps.pubxRate(msgId, rateDDC, rateCOM1, rateCOM2, rateUSB, rateSPI);*/
+	//turn off (0), on (1) msgId on specific interface
+	/*const char* msgId = "GLL";
+	uint8_t rateCOM1 = 1;
+	gps.pubxRate(msgId, rateCOM1);*/
 
-	eraseLog();
+	/*eraseLog();
 	if (startLogging(5, USER_DEFINED_SIZE, 8192, false) == 0) {
 		sleep(20);
 		getLog = true;
-	}
+	}*/
 	return 0;
 }
 
@@ -636,7 +636,7 @@ int main(int argc, char ** argv) {
 	char* dev;
 	speed_t rate;
 	bool reset = false, soft = true;
-	if (argc <= 2 && argc >= 5) {
+	if (argc <= 2 || argc >= 5) {
 		printf("Usage: gnss <dev> [baudRate] [reset] [hard]\n");
 		printf("Supported baud rates are: 4800, 9600, 19200, 38400, 57600, 115200, 230400\n");
 		return -1;

@@ -145,6 +145,7 @@ enum DebugLevel : uint8_t {
 #define NMEA_VLW 0xF
 #define NMEA_GNS 0xD
 #define NMEA_ZDA 0x8
+#define NMEA_TXT 0x41
 
 #define PUBX_CONFIG 0x41
 #define PUBX_POSITION 0
@@ -1061,6 +1062,14 @@ struct GNZDA {
 	uint8_t utcOffsetMinutes; //Local time zone minutes (fixed to 00)
 };
 
+struct GNTXT {
+	uint8_t numMsg; //Total number of messages in this transmission, 01..99
+	uint8_t msgNum; //Message number in this transmission, range 01..xx
+	uint8_t msgType; //Text identifier, u-blox receivers specify the type of the message with this number.
+		             //00: Error, 01 : Warning, 02 : Notice, 07 : User
+	const char* text; //Any ASCII text
+};
+
 struct PubxPosition {
 	DateTime dateTime;
 	Latitude lat;
@@ -1707,9 +1716,8 @@ public:
   void nmeaVlw();
   void nmeaGns();
   void nmeaZda();
-  //void pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId, bool autoBauding);
+  void nmeaTxt();
   void pubxPosition();
-  //void pubxRate(char* msgId, uint8_t rateCom1, uint8_t rateCom2, uint8_t rateDDC, uint8_t rateUsb, uint8_t rateSpi);
   void pubxSvStatus();
   void pubxTime();
   void poll(uint8_t msgClass, uint8_t msgId, uint16_t payload_length = 0, uint8_t * pload = NULL);
@@ -1741,7 +1749,7 @@ public:
   InfoMsgMask * getCfgInf(Protocol protocolId, Port portId = COM1, uint32_t timeout = maxWait); //UBX-CFG-INF
   bool setCfgInf(InfoMsgMask mask, Protocol protocolId, Port portId = COM1, uint32_t timeout = maxWait); //UBX-CFG-INF
   char * getErrMsg(DebugLevel debugLevel, uint32_t timeout = maxWait); //UBX-INF-* debug messages
-  CfgPrt * getCfgPrt(Port portId, uint32_t timeout = maxWait); //UBX-CFG-PRT
+  CfgPrt * getCfgPrt(Port portId = COM1, uint32_t timeout = maxWait); //UBX-CFG-PRT
   bool setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMask, OutProtoMask outMask, bool extendedTxTimeout = false, uint32_t timeout = maxWait); //UBX-CFG-PRT
   bool config(ConfMask mask, ConfigType type, uint32_t timeout = maxWait); //UBX-CFG-CFG
   bool config(ConfMask mask, ConfigType type, Device dev, uint32_t timeout = maxWait); //UBX-CFG-CFG
@@ -1749,11 +1757,11 @@ public:
   bool saveConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
   bool loadConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
   void cfgRst(StartType type, ResetMode mode); //UBX-CFG-RST
-  void stopGnss(); //The receiver will not be restarted, but will stop any GNSS related processing
-  void startGnss(); //Starts all GNSS tasks
-  void resetGnss(); //only restarts the GNSS tasks, without reinitializing the full system or 
+  void stopGnss(StartTypes startType = HOT_START); //The receiver will not be restarted, but will stop any GNSS related processing
+  void startGnss(StartTypes startType = HOT_START); //Starts all GNSS tasks
+  void resetGnss(StartTypes startType = HOT_START); //only restarts the GNSS tasks, without reinitializing the full system or 
 												//reloading any stored configuration.
-  void reset(bool soft = true, bool afterShutdown = true); //hardware or software reset. Reset afterShutdown applies to hardware reset only
+  void reset(bool soft = true, bool afterShutdown = true, StartTypes startType = HOT_START); //hardware or software reset. Reset afterShutdown applies to hardware reset only
   CfgMsg * getCfgMsg(uint8_t msgClass, uint8_t msgId, uint32_t timeout = maxWait); //UBX-CFG-MSG
   bool setCfgMsg(uint8_t msgClass, uint8_t msgId, uint8_t rate, uint32_t timeout = maxWait); //UBX-CFG-MSG
   PowerMode * getCfgPms(uint32_t timeout = maxWait); //UBX-CFG-PMS
@@ -1822,15 +1830,15 @@ public:
   void getGNVLW(GNVLW * data); //Dual ground/water distance
   void getGNGNS(GNGNS * data); //GNSS fix data 
   void getGNZDA(GNZDA * data); //Time and Date
+  void getGNTXT(GNTXT * data); //This message outputs various information on the receiver, such as power-up screen, software version etc
   void getPubxPosition(PubxPosition * data); //PUBX-POSITION
   void getPubxTime(PubxTime * data); //PUBX-TIME
   void pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId = COM1, bool autoBauding = false); //PUBX-CONFIG
-  void pubxRate(char * msgId, uint8_t rateCom1, uint8_t rateCom2 = 0, uint8_t rateDDC = 0, uint8_t rateUsb = 0, uint8_t rateSpi = 0); //PUBX-RATE
+  void pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2 = 0, uint8_t rateDDC = 0, uint8_t rateUsb = 0, uint8_t rateSpi = 0); //PUBX-RATE
 
 private:
   void calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload);
   void nmeaVerifyChecksum();
-  //uint8_t readGnss();
   bool pollNoError(uint32_t timeout);
   bool ackNoError(uint32_t timeout);
 };
