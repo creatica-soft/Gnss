@@ -144,42 +144,39 @@ bool Gnss::ready() {
   clock_t t = clock();
   string suffix = "";
   while (read(fd, &c, 1) > 0) {
-    //if (!nmea) { //UBX message
       if (offset < 6) {
 			switch (offset) {
 				case 0:
 					//if (nmea && (c != '\r')) printf("%c", c); else printf("%X ", c); 
 					if (c == NMEA_START) { 
-						nmea = true; 
+						nmea = true; //possible NMEA message as '$' can appear in UBX messages as well
 						nmeaChecksumNext = false; nmeaPayload = ""; nmeaChecksum = ""; 
-						//continue; 
 					}
-					else if (c == SYNC_CHARS[0]) {
-						offset = 1; nmea = false; continue;
+					else if (c == SYNC_CHARS[0]) { //most likely UBX message as NMEA seems to be using ASCII chars only
+						offset = 1; nmea = false; endOfNavEpoch = false; continue;
 					}
 					break;
 				case 1:
-					printf("%X ", c);
+					//printf("%X ", c);
 					if (c != SYNC_CHARS[1]) {
 						offset = 0;
-						//continue;
 					} else offset = 2;
 					break;					
 				case 2:
-					printf(" Receiving UBX...");
-				    printf(" msgCls %X", c);  
+					//printf(" Receiving UBX...");
+				    //printf(" msgCls %X", c);  
 					messageClass = c;
 					offset = 3;
 					break;
 				case 3:					
-				    printf(", msgId %X", c);  
+				    //printf(", msgId %X", c);  
 					messageId = c;
 					offset = 4;
 					break;
 				case 4: payloadLength = c; offset = 5; break;
 				case 5: 
 					payloadLength |= (((uint16_t)c) << 8); 
-					printf(", len %u, payload: ", payloadLength);
+					//printf(", len %u, payload: ", payloadLength);
 					payload = (uint8_t *)realloc(payload, payloadLength); 
 					if (payload == NULL && payloadLength > 0) { offset = 0; error = OUT_OF_MEMORY; return true;}
 					offset = 6;
@@ -190,55 +187,52 @@ bool Gnss::ready() {
       else { //offset >= 6
 			if ((offset < (payloadLength + 6))) {
 				payload[offset - 6] = c;
-				printf("%X ", c);
+				//printf("%X ", c);
 				offset++;
 			}
 			else if (offset == payloadLength + 6) {
 				calculateChecksum(messageClass, messageId, payloadLength, payload);
-				printf(" calculated checksum0 %X, checksum1 %X", checksum[0], checksum[1]);
+				//printf(" calculated checksum0 %X, checksum1 %X", checksum[0], checksum[1]);
 				if (c == checksum[0]) offset++;
 				else {
 					offset = 0;
-					printf("checksum0 %X - wrong checksum0: %X", checksum[0], c);
+					//printf("checksum0 %X - wrong checksum0: %X", checksum[0], c);
 					error = CHECKSUM_ERROR; 
 					return true;
 				}
-				printf(" receieved chksum0 %X", c);
+				//printf(" receieved chksum0 %X", c);
 			}
 			else if (offset == payloadLength + 7) {
 			  offset = 0;
-			  printf(", chksum1 %X\n", c);
+			  //printf(", chksum1 %X\n", c);
 			  if (c == checksum[1])	{
 				if (messageClass == UBX_NAV && messageId == NAV_EOE) { 
+					//printf("end of nav epoch\n");
 					endOfNavEpoch = true; 
 					iTOW = *(uint32_t *)payload; 
-				} else endOfNavEpoch = false;
+				}
 				error = NO_ERROR;
 				return true;
 			  }
 			  else {
-				printf("checksum1 %X - wrong checksum1: %X\n", checksum[1], c);
+				//printf("checksum1 %X - wrong checksum1: %X\n", checksum[1], c);
 				error = CHECKSUM_ERROR; 
 				return true;
 			  }
 			}
 	  }
-	//} else { //nmea message
 	  if (nmea) {
 		string cls = "", msgId = "";
 		switch (c) {
 		   case '$': continue;
-		   case '*': nmeaChecksumNext = true; suffix = "*"; break;
-		   case '\r': suffix += "\r"; break;
+		   case '*': nmeaChecksumNext = true; break;
+		   case '\r': break;
 		   case '\n': 
-			nmea = false;
-			//if (suffix.rfind("*" + nmeaChecksum + "\r") != string::npos) {
-				suffix = "";
+				nmea = false;
 				nmeaVerifyChecksum();
-				printf("%s*%s\n", nmeaPayload.c_str(), nmeaChecksum.c_str());
+				//printf("%s*%s\n", nmeaPayload.c_str(), nmeaChecksum.c_str());
 				if (nmeaValid) {
 					cls = nmeaPayload.substr(2, 3);
-					//printf("\'%s\'\n", cls.c_str());
 					if (cls == "RMC") { messageClass = UBX_NMEA; messageId = NMEA_RMC; }
 					else if (cls == "VTG") { messageClass = UBX_NMEA; messageId = NMEA_VTG; }
 					else if (cls == "GGA") { messageClass = UBX_NMEA; messageId = NMEA_GGA; }
@@ -263,7 +257,6 @@ bool Gnss::ready() {
 					return true;
 				}
 				else { printf("nmea checksum error: %s\n", nmeaPayload); return false; }
-			//}
 		    default: 
 				if (!nmeaChecksumNext) nmeaPayload += char(c); 
 				else {
@@ -2163,7 +2156,7 @@ bool Gnss::setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMas
   poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
   if (pollNoError(timeout)) prtCfg = (CfgPrt *)(payload);
   else return false;
-  printf("baud rate: %lu\n", rate);
+  //printf("baud rate: %lu\n", rate);
   prtCfg->baudRate = rate;
   prtCfg->mode.charLen = mode.charLen;
   prtCfg->mode.parity = mode.parity;

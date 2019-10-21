@@ -124,6 +124,7 @@ int tRateToI(speed_t r) {
 
 int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	speed_t rates[7] = { B4800, B9600, B19200, B38400, B57600, B115200, B230400 };
+	time_t utc, t1;
 	CfgMsg* cfg = NULL;
 	CfgPrt* cfgPrt = NULL;
 	getLog = false;
@@ -140,12 +141,16 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 				gps.end();
 				gps.begin(dev, rates[i]);
 				//writing at wrong baud rate causes Gnss receiver to get disabled after 100 or frame errors
-				//instead of calling getCfgPrt(), we should passively listen for something meaninful
-				cfgPrt = gps.getCfgPrt();
-				
-				if (cfgPrt != NULL) {
-					printf(" connected.\n"); break;
-				} else if (i == 6) { printf(" sorry, giving up...\n"); return -1; }
+				//instead of calling getCfgPrt(), we should passively listen for something meaninful like UBX-NAV-EOE,
+				//which updates iTOW. The problem with UBX-NAV-EOE is that it is not sent by default, only NMEA messages are
+				//GNRMC message updates utcTime, let's watch it
+				t1 = time(NULL);
+				utc = gps.utcTime;
+				while (time(NULL) - t1 < 2) {
+					gps.get();
+				}
+				if (utc != gps.utcTime) { printf(" connected.\n"); break; }
+				else if (i == 6) { printf(" sorry, giving up...\n"); return -1; }
 			}
 		}
 	}
@@ -156,6 +161,8 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	}
 	if (gps.baudRate != rate) {
 		printf("Setting desired rate %d...\n", tRateToI(rate));
+		cfgPrt = gps.getCfgPrt();
+		if (cfgPrt == NULL) { printf("cfgPrt is NULL"); return -1; }
 		switch (rate) {
 			case B4800: cfgPrt->baudRate = BAUD_RATE_4800; break;
 			case B9600: cfgPrt->baudRate = BAUD_RATE_9600; break;
@@ -169,13 +176,16 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 		{
 			printf(" success\n");
 			gps.end();
-			sleep(10);
 			gps.begin(dev, rate);
-			cfgPrt = gps.getCfgPrt();
-			if (cfgPrt != NULL) {
+			t1 = time(NULL);
+			utc = gps.utcTime;
+			while (time(NULL) - t1 < 2) {
+				gps.get();
+			}
+			if (utc != gps.utcTime) {
 				printf("Connected at new rate %d\n", gnssPortRate);
-				if (gps.saveConfig()) printf("Config is saved\n");
-				else printf("Saving config failed\n");
+				if (gps.saveConfig()) printf("Configuration is saved\n");
+				else printf("Saving configuration failed\n");
 			}
 			else {
 				printf("Failed to connect at new rate %d\n", gnssPortRate); return -1;
@@ -589,18 +599,18 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	  else printf(" failed\n");
 	*/
 
-	InProtoMask inMask;
+	/*InProtoMask inMask;
 	OutProtoMask outMask;
 	inMask.inUbx = 1; inMask.inNmea = 1; inMask.inRtcm = 1;
 	outMask.outUbx = 1; outMask.outNmea = 1;
 	gps.pubxConfig(BAUD_RATE_57600, inMask, outMask);
 	gps.end();
-	gps.begin(dev, B57600);
+	gps.begin(dev, B57600);*/
 
 	//turn off (0), on (1) msgId on specific interface
 	/*const char* msgId = "GLL";
-	uint8_t rateCOM1 = 1;
-	gps.pubxRate(msgId, rateCOM1);*/
+	uint8_t rateOnCOM1 = 1;
+	gps.pubxRate(msgId, rateOnCOM1);*/
 
 	/*eraseLog();
 	if (startLogging(5, USER_DEFINED_SIZE, 8192, false) == 0) {

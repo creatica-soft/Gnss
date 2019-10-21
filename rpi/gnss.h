@@ -1647,7 +1647,7 @@ public:
   uint8_t checksum[2], messageClass, pollMessageClass, messageId, pollMessageId, * payload, * pollPayload;
   uint16_t offset, payloadLength, pollPayloadLength;
   uint32_t iTOW; //set when UBX-NAV-EOE marker is received (end of Nav Epoch - after all NAV and NMEA enabled messages)
-				 //endOfNavEpoch field is set to true at this time. It is reset on the next message
+				 //endOfNavEpoch field is set to true at this time. It is reset on the next UBX message
   Error error;
   bool nmea, nmeaChecksumNext, nmeaValid, endOfNavEpoch, loggingEnabled, logFileExists;
   volatile bool pps, ttp;
