@@ -232,27 +232,36 @@ bool Gnss::ready() {
 				nmeaVerifyChecksum();
 				//printf("%s*%s\n", nmeaPayload.c_str(), nmeaChecksum.c_str());
 				if (nmeaValid) {
-					cls = nmeaPayload.substr(2, 3);
-					if (cls == "RMC") { messageClass = UBX_NMEA; messageId = NMEA_RMC; }
-					else if (cls == "VTG") { messageClass = UBX_NMEA; messageId = NMEA_VTG; }
-					else if (cls == "GGA") { messageClass = UBX_NMEA; messageId = NMEA_GGA; }
-					else if (cls == "GSA") { messageClass = UBX_NMEA; messageId = NMEA_GSA; }
-					else if (cls == "GSV") { messageClass = UBX_NMEA; messageId = NMEA_GSV; }
-					else if (cls == "GLL") { messageClass = UBX_NMEA; messageId = NMEA_GLL; }
-					else if (cls == "GST") { messageClass = UBX_NMEA; messageId = NMEA_GST; }
-					else if (cls == "VLW") { messageClass = UBX_NMEA; messageId = NMEA_VLW; }
-					else if (cls == "GNS") { messageClass = UBX_NMEA; messageId = NMEA_GNS; }
-					else if (cls == "ZDA") { messageClass = UBX_NMEA; messageId = NMEA_ZDA; }
-					else if (cls == "TXT") { messageClass = UBX_NMEA; messageId = NMEA_TXT; }
-					cls = nmeaPayload.substr(0, 4);
-					if (cls == "PUBX") {
-						messageClass = UBX_PUBX;
-						msgId = nmeaPayload.substr(5, 2);
-						if (msgId == "41") messageId = PUBX_CONFIG;
-						else if (msgId == "00") messageId = PUBX_POSITION;
-						else if (msgId == "40") messageId = PUBX_RATE;
-						else if (msgId == "03") messageId = PUBX_SVSTATUS;
-						else if (msgId == "04") messageId = PUBX_TIME;
+					if (nmeaPayload.length() >= 5) {
+						cls = nmeaPayload.substr(2, 3);
+						if (cls == "RMC") { messageClass = UBX_NMEA; messageId = NMEA_RMC; }
+						else if (cls == "VTG") { messageClass = UBX_NMEA; messageId = NMEA_VTG; }
+						else if (cls == "GGA") { messageClass = UBX_NMEA; messageId = NMEA_GGA; }
+						else if (cls == "GSA") { messageClass = UBX_NMEA; messageId = NMEA_GSA; }
+						else if (cls == "GSV") { messageClass = UBX_NMEA; messageId = NMEA_GSV; }
+						else if (cls == "GLL") { messageClass = UBX_NMEA; messageId = NMEA_GLL; }
+						else if (cls == "GST") { messageClass = UBX_NMEA; messageId = NMEA_GST; }
+						else if (cls == "VLW") { messageClass = UBX_NMEA; messageId = NMEA_VLW; }
+						else if (cls == "GNS") { messageClass = UBX_NMEA; messageId = NMEA_GNS; }
+						else if (cls == "ZDA") { messageClass = UBX_NMEA; messageId = NMEA_ZDA; }
+						else if (cls == "GBS") { messageClass = UBX_NMEA; messageId = NMEA_GBS; }
+						else if (cls == "DTM") { messageClass = UBX_NMEA; messageId = NMEA_DTM; }
+						else if (cls == "GRS") { messageClass = UBX_NMEA; messageId = NMEA_GRS; }
+						else if (cls == "TXT") { messageClass = UBX_NMEA; messageId = NMEA_TXT; }
+					}
+					if (nmeaPayload.length() >= 4) {
+						cls = nmeaPayload.substr(0, 4);
+						if (cls == "PUBX") {
+							messageClass = UBX_PUBX;
+							if (nmeaPayload.length() >= 7) {
+								msgId = nmeaPayload.substr(5, 2);
+								if (msgId == "41") messageId = PUBX_CONFIG;
+								else if (msgId == "00") messageId = PUBX_POSITION;
+								else if (msgId == "40") messageId = PUBX_RATE;
+								else if (msgId == "03") messageId = PUBX_SVSTATUS;
+								else if (msgId == "04") messageId = PUBX_TIME;
+							}
+						}
 					}
 					return true;
 				}
@@ -451,6 +460,9 @@ void Gnss::get() {
 					case NMEA_VLW: nmeaVlw(); break;
 					case NMEA_GNS: nmeaGns(); break;
 					case NMEA_ZDA: nmeaZda(); break;
+					case NMEA_GBS: nmeaGbs(); break;
+					case NMEA_DTM: nmeaDtm(); break;
+					case NMEA_GRS: nmeaGrs(); break;
 					case NMEA_TXT: nmeaTxt(); break;
 				} break;
 			case UBX_PUBX:
@@ -1669,7 +1681,109 @@ void Gnss::nmeaTxt() {
 		case 2: sprintf(t, "Notice"); break;
 		case 7: sprintf(t, "User"); break;
 	}
-	printf("GNTXT: message %u out of %u \"%s! %s\"\n", data.msgNum, data.numMsg, t, data.text);
+	printf("GNTXT: message %u out of %u \"%s! %s\"\n", data.msgNum, data.numMsg, t, data.text.c_str());
+}
+
+void Gnss::nmeaGbs() {
+	GBS data;
+	getGbs(&data);
+	tm tm_time;
+	char tt[32];
+	memset(tt, 0, 32);
+	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
+	strftime(tt, 32, "%c", localtime(&t));
+	printf("GBS: %s Lat err %.1fm, Lon err %.1fm, Alt err %.1fm, failed svId %u, bias %.1fm, stddev %.1fm, sysId %u, sigId %u\n", tt, (double)(data.errLat), (double)(data.errLon), (double)(data.errAlt), data.svId, (double)(data.bias), (double)(data.stddev), data.systemId, data.signalId);
+}
+
+void Gnss::nmeaDtm() {
+	DTM data;
+	getDtm(&data);
+	printf("DTM: datum %s differs from refDatum %s by %.1f\'%c %.1f\'%c %.1fm\n", data.datum.c_str(), data.refDatum.c_str(), (double)(data.lat), data.NS, (double)(data.lon), data.EW, (double)(data.alt));
+}
+
+void Gnss::nmeaGrs() {
+	GRS data;
+	getGrs(&data);
+	tm tm_time;
+	char tt[32], s[16], ss[255];
+	memset(tt, 0, 32);
+	memset(s, 0, 16);
+	memset(ss, 0, 255);
+	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
+	strftime(tt, 32, "%c", localtime(&t));
+	for (uint8_t i = 0; i < 12; i++) {
+		sprintf(s, "%.1fm ", (double)(data.residual[i]));
+		strcat(ss, s);
+	}
+	printf("GRS: %s %s sysId %u, sigId %u\n", tt, ss, data.systemId, data.signalId);
+}
+
+void Gnss::nmeaGpq(const char* talkerId, const char* msgId) {
+	uint8_t x = 0;
+	char s[32], ss[32];
+	memset(s, 0, 32);
+	memset(ss, 0, 32);
+
+	sprintf(s, "%sGPQ,%s", talkerId, msgId);
+
+	for (uint8_t i = 0; i < strlen(s); i++) {
+		x ^= s[i];
+	}
+	sprintf(ss, "$%s*%X\r\n", s, x);
+	//printf(ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	tcdrain(fd);
+}
+
+void Gnss::nmeaGnq(const char* talkerId, const char* msgId) {
+	uint8_t x = 0;
+	char s[32], ss[32];
+	memset(s, 0, 32);
+	memset(ss, 0, 32);
+
+	sprintf(s, "%sGNQ,%s", talkerId, msgId);
+
+	for (uint8_t i = 0; i < strlen(s); i++) {
+		x ^= s[i];
+	}
+	sprintf(ss, "$%s*%X\r\n", s, x);
+	//printf(ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	tcdrain(fd);
+}
+
+void Gnss::nmeaGlq(const char* talkerId, const char* msgId) {
+	uint8_t x = 0;
+	char s[32], ss[32];
+	memset(s, 0, 32);
+	memset(ss, 0, 32);
+
+	sprintf(s, "%sGLQ,%s", talkerId, msgId);
+
+	for (uint8_t i = 0; i < strlen(s); i++) {
+		x ^= s[i];
+	}
+	sprintf(ss, "$%s*%X\r\n", s, x);
+	//printf(ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	tcdrain(fd);
+}
+
+void Gnss::nmeaGbq(const char* talkerId, const char* msgId) {
+	uint8_t x = 0;
+	char s[32], ss[32];
+	memset(s, 0, 32);
+	memset(ss, 0, 32);
+
+	sprintf(s, "%sGBQ,%s", talkerId, msgId);
+
+	for (uint8_t i = 0; i < strlen(s); i++) {
+		x ^= s[i];
+	}
+	sprintf(ss, "$%s*%X\r\n", s, x);
+	//printf(ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	tcdrain(fd);
 }
 
 void Gnss::pubxPosition() {
@@ -1687,7 +1801,8 @@ void Gnss::pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, P
 	uint8_t x = 0;
 	char s[255], ss[255];
 	memset(s, 0, 255);
-	
+	memset(ss, 0, 255);
+
 	uint16_t im = inMask.inUbx | (inMask.inNmea << 1) | (inMask.inRtcm << 2), om = outMask.outUbx | (outMask.outNmea << 1);
 	uint8_t ab = autoBauding ? 1 : 0;
 	sprintf(s, "PUBX,41,%u,%.4u,%.4u,%lu,%u", (uint8_t)portId, im, om, (uint32_t)rate, ab);
@@ -2780,7 +2895,7 @@ void Gnss::getGNGGA(GNGGA * data) {
 	memset(&(data->lat), 0, sizeof(Latitude));
 	memset(&(data->lon), 0, sizeof(Longitude));
 	data->fixType = NO_FIX_TYPE; data->numSV = 0; data->hDOP = 0; data->alt = 0; data->geoidEllipsoidDiff = 0; data->ageDiffCorr = 0; data->diffCorrStationId = 0;
-	string time = "", date = nmeaDate, lat, lon, gga[15];
+	string time = "", lat, lon, gga[15];
 	char NS = '\0', EW = '\0';
 	
 	split(gga, 15, nmeaPayload);
@@ -2807,7 +2922,7 @@ void Gnss::getGNGGA(GNGGA * data) {
 			case 14: data->diffCorrStationId = stoi(gga[i], nullptr, 10); break;
 		}		
 	}
-	nmeaToUtc(&(data->dateTime), date, time);
+	nmeaToUtc(&(data->dateTime), nmeaDate, time);
 	nmeaLonToDMS(&(data->lon), lon, EW);
 	nmeaLatToDMS(&(data->lat), lat, NS);
 }
@@ -2817,7 +2932,7 @@ void Gnss::getGNGLL(GNGLL * data) {
 	memset(&(data->lat), 0, sizeof(Latitude));
 	memset(&(data->lon), 0, sizeof(Longitude));
 	data->fixType = 'N'; data->status = 'V';
-	string time = "", date = nmeaDate, lat, lon, gll[8];
+	string time = "", lat, lon, gll[8];
 	char NS = '\0', EW = '\0';
 
 	split(gll, 8, nmeaPayload);
@@ -2840,7 +2955,7 @@ void Gnss::getGNGLL(GNGLL * data) {
 				break;
 		}		
 	}
-	nmeaToUtc(&(data->dateTime), date, time);
+	nmeaToUtc(&(data->dateTime), nmeaDate, time);
 	nmeaLonToDMS(&(data->lon), lon, EW);
 	nmeaLatToDMS(&(data->lat), lat, NS);
 }
@@ -2943,7 +3058,7 @@ void Gnss::getGNGSV(GNGSV * data) {
 void Gnss::getGNGST(GNGST * data) {
 	memset(&(data->dateTime), 0, sizeof(DateTime));
 	data->rangeRms = 0; data->stdMajor = 0; data->stdMinor = 0; data->orient = 0; data->stdLat = 0; data->stdLon = 0; data->stdAlt = 0;
-	string time = "", date = nmeaDate;
+	string time = "";
 	string gst[9];
 
 	split(gst, 9, nmeaPayload);
@@ -2961,7 +3076,7 @@ void Gnss::getGNGST(GNGST * data) {
 			case 8: data->stdAlt = stof(gst[i], nullptr); break;
 		}		
 	}
-	nmeaToUtc(&(data->dateTime), date, time);
+	nmeaToUtc(&(data->dateTime), nmeaDate, time);
 }
 
 //Dual ground/water distance
@@ -2993,7 +3108,7 @@ void Gnss::getGNGNS(GNGNS * data) {
 	memset(&(data->lon), 0, sizeof(Longitude));
 	data->fixType[0] = 'N'; data->fixType[1] = 'N';
 	data->numSV = 0; data->hDOP = 0; data->alt = 0; data->geoidEllipsoidDiff = 0; data->ageDiffCorr = 0; data->diffCorrStationId = 0;
-	string time = "", date = nmeaDate, lat = "", lon = "";
+	string time = "", lat = "", lon = "";
 	char NS = '\0', EW = '\0';
 	string gns[13];
 
@@ -3017,7 +3132,7 @@ void Gnss::getGNGNS(GNGNS * data) {
 			//case 13: data->navStatus = gns[i].at(0); break;
 		}		
 	}
-	nmeaToUtc(&(data->dateTime), date, time);
+	nmeaToUtc(&(data->dateTime), nmeaDate, time);
 	nmeaLonToDMS(&(data->lon), lon, EW);
 	nmeaLatToDMS(&(data->lat), lat, NS);
 }
@@ -3031,13 +3146,13 @@ void Gnss::getGNZDA(GNZDA * data) {
 
 	split(zda, 7, nmeaPayload);
 
-	for (uint8_t i = 1; i < 7; i++) {
-		if (zda[i].size() >= 4)
+	for (uint8_t i = 1; i < 7; i++) {	
+		if (zda[i] != "")
 		switch (i) {
 			case 1: time = zda[i]; break;
 			case 2: date = zda[i]; break;
 			case 3: date += zda[i]; break;
-			case 4: date += zda[i].substr(2,2); break;
+			case 4: if (zda[i].length() >= 4) date += zda[i].substr(2,2); break;
 			case 5: data->utcOffsetHours = stoi(zda[i], nullptr, 10); break;
 			case 6: data->utcOffsetMinutes = stoi(zda[i], nullptr, 10); break;
 		}		
@@ -3045,8 +3160,10 @@ void Gnss::getGNZDA(GNZDA * data) {
 	nmeaToUtc(&(data->dateTime), date, time);
 }
 
+//Info messages such as Error, Warning, Notice
 void Gnss::getGNTXT(GNTXT* data) {
 	string txt[5];
+	data->text = ""; data->msgNum = 0; data->numMsg = 0; data->msgType = 0;
 
 	split(txt, 5, nmeaPayload);
 
@@ -3056,11 +3173,94 @@ void Gnss::getGNTXT(GNTXT* data) {
 				case 1: data->numMsg = stoi(txt[i], nullptr, 10); break;
 				case 2: data->msgNum = stoi(txt[i], nullptr, 10); break;
 				case 3: data->msgType = stoi(txt[i], nullptr, 10); break;
-				case 4: data->text = txt[i].c_str(); break;
+				case 4: data->text = txt[i]; break;
 			}
 	}
 }
 
+//Gnss fault detection
+void Gnss::getGbs(GBS* data) {
+	string gbs[11];
+	memset(&(data->dateTime), 0, sizeof(DateTime));
+	data->errLat = 0; data->errLon = 0; data->bias = 0; data->errAlt = 0;
+	data->signalId = 0; data->stddev = 0; data->svId = 0; data->systemId = 0; data->prob = 0;
+	string time = "";
+
+	split(gbs, 11, nmeaPayload);
+
+	for (uint8_t i = 1; i < 11; i++) {
+		if (gbs[i] != "")
+			switch (i) {
+				case 1: time = gbs[i]; break;
+				case 2: data->errLat = stof(gbs[i], nullptr); break;
+				case 3: data->errLon = stof(gbs[i], nullptr); break;
+				case 4: data->errAlt = stof(gbs[i], nullptr); break;
+				case 5: data->svId = stoi(gbs[i], nullptr, 10); break;
+				case 6: data->prob = stof(gbs[i], nullptr); break;
+				case 7: data->bias = stof(gbs[i], nullptr); break;
+				case 8: data->stddev = stof(gbs[i], nullptr); break;
+				case 9: data->systemId = stoi(gbs[i], nullptr, 10); break;
+				case 10: data->signalId = stoi(gbs[i], nullptr, 10); break;
+			}
+	}
+	nmeaToUtc(&(data->dateTime), nmeaDate, time);
+}
+
+void Gnss::getGrs(GRS* data) {
+	string grs[17];
+	memset(&(data->dateTime), 0, sizeof(DateTime));
+	data->signalId = 0; data->systemId = 0;
+	for (uint8_t i = 0; i < 12; i++) data->residual[i] = 0;
+	string time = "";
+
+	split(grs, 17, nmeaPayload);
+
+	for (uint8_t i = 1; i < 17; i++) {
+		if (grs[i] != "")
+			switch (i) {
+				case 1: time = grs[i]; break;
+				case 2: data->mode = stoi(grs[i], nullptr, 10);
+				case 3: data->residual[0] = stof(grs[i], nullptr); break;
+				case 4: data->residual[1] = stof(grs[i], nullptr); break;
+				case 5: data->residual[2] = stof(grs[i], nullptr); break;
+				case 6: data->residual[3] = stof(grs[i], nullptr); break;
+				case 7: data->residual[4] = stof(grs[i], nullptr); break;
+				case 8: data->residual[5] = stof(grs[i], nullptr); break;
+				case 9: data->residual[6] = stof(grs[i], nullptr); break;
+				case 10: data->residual[7] = stof(grs[i], nullptr); break;
+				case 11: data->residual[8] = stof(grs[i], nullptr); break;
+				case 12: data->residual[9] = stof(grs[i], nullptr); break;
+				case 13: data->residual[10] = stof(grs[i], nullptr); break;
+				case 14: data->residual[11] = stof(grs[i], nullptr); break;
+				case 15: data->systemId = stoi(grs[i], nullptr, 10); break;
+				case 16: data->signalId = stoi(grs[i], nullptr, 10); break;
+			}
+	}
+	nmeaToUtc(&(data->dateTime), nmeaDate, time);
+}
+
+void Gnss::getDtm(DTM* data) {
+	string dtm[9]; 
+	data->lat = 0; data->lon = 0; data->alt = 0; data->subDatum = ""; data->datum = ""; data->refDatum = "";
+
+	split(dtm, 9, nmeaPayload);
+
+	for (uint8_t i = 1; i < 9; i++) {
+		if (dtm[i] != "")
+			switch (i) {
+				case 1: data->datum = dtm[i]; break;
+				case 2: break;
+				case 3: data->lat = stof(dtm[i], nullptr); break;
+				case 4: data->NS = dtm[i].at(0); break;
+				case 5: data->lon = stof(dtm[i], nullptr); break;
+				case 6: data->EW = dtm[i].at(0); break;
+				case 7: data->alt = stof(dtm[i], nullptr); break;
+				case 8: data->refDatum = dtm[i]; break;
+			}
+	}
+}
+
+//UBX proprietary messages
 void Gnss::getPubxPosition(PubxPosition * data) {
 	memset(&(data->dateTime), 0, sizeof(DateTime));
 	memset(&(data->lat), 0, sizeof(Latitude));
@@ -3146,7 +3346,7 @@ void split(string msg[], uint8_t array_size, string pload) {
 }
 
 void nmeaLatToDMS(Latitude * latitude, string lat, char NS) {
-	if (lat.size() < 2) return;
+	if (lat.length() < 2) return;
 	if (lat.substr(2) == "" || lat.substr(0, 2) == "") return;
 	float m = stof(lat.substr(2), nullptr);
 	latitude->deg = stoi(lat.substr(0, 2), nullptr, 10);
@@ -3156,7 +3356,7 @@ void nmeaLatToDMS(Latitude * latitude, string lat, char NS) {
 }
 
 void nmeaLonToDMS(Longitude * longitude, string lon, char EW) {
-	if (lon.size() < 3) return;
+	if (lon.length() < 3) return;
 	if (lon.substr(3) == "" || lon.substr(0, 3) == "") return;
 	float m = stof(lon.substr(3), nullptr);
 	longitude->deg = stoi(lon.substr(0, 3), nullptr, 10);
@@ -3230,7 +3430,7 @@ string dmsLonToStr(Longitude * lon) {
 }
 
 void nmeaToUtc(DateTime * dt, string date, string time) {
-	if (date.size() < 6) return;
+	if (date.length() < 6) return;
 	if (date.substr(0, 2) != "") dt->day = stoi(date.substr(0, 2), nullptr, 10);
 	if (date.substr(2, 2) != "") dt->month = stoi(date.substr(2, 2), nullptr, 10);
 	if (date.substr(4, 2) != "") dt->year = stoi(date.substr(4, 2), nullptr, 10);

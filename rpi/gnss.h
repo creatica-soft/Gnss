@@ -51,12 +51,12 @@ enum DebugLevel : uint8_t {
 #define MON_VER_EXTENSION_NUMBER 4
 
 //Message Classes
-#define UBX_NAV 0x1
-#define UBX_RXM 0x2
-#define UBX_INF 0x4
-#define UBX_ACK 0x5
-#define UBX_CFG 0x6
-#define UBX_UPD 0x9
+#define UBX_NAV 1
+#define UBX_RXM 2
+#define UBX_INF 4
+#define UBX_ACK 5
+#define UBX_CFG 6
+#define UBX_UPD 9
 #define UBX_MON 0xA
 #define UBX_AID 0xB
 #define UBX_TIM 0xD
@@ -67,91 +67,98 @@ enum DebugLevel : uint8_t {
 
 
 //Message IDs
-#define ACK_ACK 0x1
 #define ACK_NAK 0
+#define ACK_ACK 1
 
-#define CFG_CFG 0x9
-#define CFG_GNSS 0x3E
-#define CFG_INF 0x2
-#define CFG_LOGFILTER 0x47
-#define CFG_MSG 0x1
-#define CFG_NAV5 0x24
-#define CFG_NAVX5 0x23
-#define CFG_ODO 0x1E
-#define CFG_PM2 0x3B
-#define CFG_PMS 0x86
 #define CFG_PRT 0
-#define CFG_PWR 0x57
-#define CFG_RATE 0x8
-#define CFG_RST 0x4
+#define CFG_MSG 1
+#define CFG_INF 2
+#define CFG_RST 4
+#define CFG_RATE 8
+#define CFG_CFG 9
 #define CFG_RXM 0x11
 #define CFG_SBAS 0x16
-#define CFG_SLAS 0x8D
-#define CFG_TP5 0x31
-#define CFG_GEOFENCE 0x69
 #define CFG_NMEA 0x17
+#define CFG_ODO 0x1E
+#define CFG_NAVX5 0x23
+#define CFG_NAV5 0x24
+#define CFG_TP5 0x31
+#define CFG_PM2 0x3B
+#define CFG_GNSS 0x3E
+#define CFG_LOGFILTER 0x47
+#define CFG_PWR 0x57
+#define CFG_GEOFENCE 0x69
+#define CFG_PMS 0x86
+#define CFG_SLAS 0x8D
 //#define CFG_BATCH 0x93 //not supported in protocol version < 23.01
 
-#define MON_GNSS 0x28 
-#define MON_PATCH 0x27
 #define MON_VER 0x4
+#define MON_PATCH 0x27
+#define MON_GNSS 0x28 
 
-#define NAV_CLOCK 0x22
-#define NAV_DGPS 0x31
-#define NAV_DOP 0x4
-#define NAV_EOE 0x61
-#define NAV_GEOFENCE 0x39
-#define NAV_ODO 0x9
-#define NAV_ORB 0x34
-#define NAV_POSLLH 0x2
-#define NAV_PVT 0x7
+#define NAV_POSLLH 2
+#define NAV_DOP 4
+#define NAV_PVT 7
+#define NAV_ODO 9
 #define NAV_RESETODO 0x10
-#define NAV_SAT 0x35
-#define NAV_SBAS 0x32
-#define NAV_SLAS 0x42
+#define NAV_TIMEGPS 0x20
+#define NAV_TIMEUTC 0x21
+#define NAV_CLOCK 0x22
+#define NAV_TIMEGLO 0x23
 #define NAV_TIMEBDS 0x24
 #define NAV_TIMEGAL 0x25
-#define NAV_TIMEGLO 0x23
-#define NAV_TIMEGPS 0x20
 #define NAV_TIMELS 0x26
-#define NAV_TIMEUTC 0x21
+#define NAV_DGPS 0x31
+#define NAV_SBAS 0x32
+#define NAV_ORB 0x34
+#define NAV_SAT 0x35
+#define NAV_GEOFENCE 0x39
+#define NAV_SLAS 0x42
+#define NAV_EOE 0x61
 
-#define TIM_TM2 0x3
-#define TIM_TP 0x1
+#define TIM_TP 1
+#define TIM_TM2 3
 
-#define LOG_CREATE 0x7
-#define LOG_ERASE 0x3
-#define LOG_INFO 0x8
-#define LOG_RETRIEVEPOSEXTRA 0xF
+#define LOG_ERASE 3
+#define LOG_STRING 4
+#define LOG_CREATE 7
+#define LOG_INFO 8
+#define LOG_RETRIEVE 9
 #define LOG_RETRIEVEPOS 0xB
 #define LOG_RETRIEVESTRING 0xD
-#define LOG_RETRIEVE 0x9
-#define LOG_STRING 0x4
 #define LOG_FINDTIME 0xE
+#define LOG_RETRIEVEPOSEXTRA 0xF
 
-#define INF_DEBUG 0x4
 #define INF_ERROR 0
-#define INF_NOTICE 0x2
-#define INF_TEST 0x3
-#define INF_WARNING 0x1
+#define INF_WARNING 1
+#define INF_NOTICE 2
+#define INF_TEST 3
+#define INF_DEBUG 4
 
-#define NMEA_RMC 0x4
-#define NMEA_VTG 0x5
 #define NMEA_GGA 0
-#define NMEA_GSA 0x2
-#define NMEA_GSV 0x3
-#define NMEA_GLL 0x1
-#define NMEA_GST 0x7
-#define NMEA_VLW 0xF
+#define NMEA_GLL 1
+#define NMEA_GSA 2
+#define NMEA_GSV 3
+#define NMEA_RMC 4
+#define NMEA_VTG 5
+#define NMEA_GRS 6
+#define NMEA_GST 7
+#define NMEA_ZDA 8
+#define NMEA_GBS 9
+#define NMEA_DTM 0xA
 #define NMEA_GNS 0xD
-#define NMEA_ZDA 0x8
+#define NMEA_VLW 0xF
+#define NMEA_GPQ 0x40
 #define NMEA_TXT 0x41
+#define NMEA_GNQ 0x42
+#define NMEA_GLQ 0x43
+#define NMEA_GBQ 0x44
 
-#define PUBX_CONFIG 0x41
 #define PUBX_POSITION 0
+#define PUBX_SVSTATUS 3 
+#define PUBX_TIME 4
 #define PUBX_RATE 0x40
-#define PUBX_SVSTATUS 0x3 
-#define PUBX_TIME 0x4
+#define PUBX_CONFIG 0x41
 
 enum Port : uint8_t {
 	DDC,
@@ -1067,7 +1074,39 @@ struct GNTXT {
 	uint8_t msgNum; //Message number in this transmission, range 01..xx
 	uint8_t msgType; //Text identifier, u-blox receivers specify the type of the message with this number.
 		             //00: Error, 01 : Warning, 02 : Notice, 07 : User
-	const char* text; //Any ASCII text
+	string text; //Any ASCII text
+};
+
+struct GBS {
+	DateTime dateTime; //UTC time only
+	float errLat; //m, Expected error in latitude
+	float errLon; //m, Expected error in longitude
+	float errAlt; //m, Expected error in altitude
+	uint8_t svId; //Satellite ID of most likely failed satellite
+	float prob; //Probability of missed detection, not supported (empty)
+	float bias; //m, Estimate on most likely failed satellite (a priori residual)
+	float stddev; //m, Standard deviation of estimated bias
+	uint8_t systemId; //NMEA defined GNSS System ID, NMEA v4.1 and above only, see GnssId enum
+	uint8_t signalId; //NMEA defined GNSS Signal ID (0 = All signals) NMEA v4.1 and above only
+};
+
+struct DTM {
+	string datum; //Local datum code: W84 = WGS84, 999 = user defined
+	string subDatum; //A null field
+	float lat; //minutes, offset in Latitude
+	char NS; //North-South
+	float lon; //minutes, offset in Longitude
+	char EW; //East-West
+	float alt; //m, offset in altitude
+	string refDatum; //Reference datum code (always W84 = WGS 84)
+};
+
+struct GRS {
+	DateTime dateTime; //UTC time only
+	uint8_t mode; //Mode (see table below), u-blox receivers will always output Mode 1 residuals
+	float residual[12]; //m, Range residuals for SVs used in navigation. The SV order matches the order from the GSA sentence.
+	uint8_t systemId; //NMEA defined GNSS System ID, NMEA v4.1 and above only, see GnssId enum
+	uint8_t signalId; //NMEA defined GNSS Signal ID (0 = All signals) NMEA v4.1 and above only
 };
 
 struct PubxPosition {
@@ -1717,6 +1756,9 @@ public:
   void nmeaGns();
   void nmeaZda();
   void nmeaTxt();
+  void nmeaGbs();
+  void nmeaDtm();
+  void nmeaGrs();
   void pubxPosition();
   void pubxSvStatus();
   void pubxTime();
@@ -1831,6 +1873,13 @@ public:
   void getGNGNS(GNGNS * data); //GNSS fix data 
   void getGNZDA(GNZDA * data); //Time and Date
   void getGNTXT(GNTXT * data); //This message outputs various information on the receiver, such as power-up screen, software version etc
+  void getGbs(GBS* data); //GNSS Satellite Fault Detection
+  void getDtm(DTM* data); //Datum Reference
+  void getGrs(GRS* data); //GNSS Range Residuals
+  void nmeaGpq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GP)
+  void nmeaGnq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GN)
+  void nmeaGlq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GL)
+  void nmeaGbq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GB)
   void getPubxPosition(PubxPosition * data); //PUBX-POSITION
   void getPubxTime(PubxTime * data); //PUBX-TIME
   void pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId = COM1, bool autoBauding = false); //PUBX-CONFIG

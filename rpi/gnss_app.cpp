@@ -611,6 +611,11 @@ int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	/*const char* msgId = "GLL";
 	uint8_t rateOnCOM1 = 1;
 	gps.pubxRate(msgId, rateOnCOM1);*/
+	
+	//poll NMEA message IDs (GBS, GRS, DTM) using "EI" as its own talker ID
+	//gps.nmeaGnq("EI", "GBS");
+	//gps.nmeaGnq("EI", "GRS");
+	//gps.nmeaGnq("EI", "DTM");
 
 	/*eraseLog();
 	if (startLogging(5, USER_DEFINED_SIZE, 8192, false) == 0) {
