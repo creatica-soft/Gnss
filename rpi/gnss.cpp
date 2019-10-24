@@ -142,7 +142,6 @@ void Gnss::nmeaVerifyChecksum()  {
 bool Gnss::ready() {
   uint8_t c;
   clock_t t = clock();
-  string suffix = "";
   while (read(fd, &c, 1) > 0) {
       if (offset < 6) {
 			switch (offset) {
@@ -269,7 +268,7 @@ bool Gnss::ready() {
 		    default: 
 				if (!nmeaChecksumNext) nmeaPayload += char(c); 
 				else {
-					nmeaChecksum += char(c); suffix += char(c);
+					nmeaChecksum += char(c);
 				}
 				break;
 		}
@@ -3219,7 +3218,7 @@ void Gnss::getGrs(GRS* data) {
 		if (grs[i] != "")
 			switch (i) {
 				case 1: time = grs[i]; break;
-				case 2: data->mode = stoi(grs[i], nullptr, 10);
+				case 2: data->mode = stoi(grs[i], nullptr, 10); break;
 				case 3: data->residual[0] = stof(grs[i], nullptr); break;
 				case 4: data->residual[1] = stof(grs[i], nullptr); break;
 				case 5: data->residual[2] = stof(grs[i], nullptr); break;
