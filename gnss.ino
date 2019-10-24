@@ -270,7 +270,12 @@ void setup() {
 
   //eraseLog();
   //startLogging(MIN_SIZE, 0, true);
-  
+
+  //poll NMEA message IDs (GBS, GRS, DTM) using "EI" as its own talker ID
+  /*gps.nmeaGnq("EI", "GBS");
+  gps.nmeaGnq("EI", "GRS");
+  gps.nmeaGnq("EI", "DTM");*/
+
 }
 
 void startLogging(LogSize ls_enum, uint32_t customSize, bool circular) {
