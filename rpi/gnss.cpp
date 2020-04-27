@@ -1,7 +1,10 @@
+#include <sys/stat.h>
 #include "gnss.h"
+#include <errno.h>
 using namespace std;
-
+ 
 Gnss::Gnss() {
+	isReady = false;
 	payloadLength = 0;
 	pollPayloadLength = 0;
     offset = 0;
@@ -14,13 +17,15 @@ Gnss::Gnss() {
 	nmeaPayload = "", nmeaChecksum = "";
 	endOfNavEpoch = false;
 	iTOW = 0;
-	ttp = false;
-	loggingEnabled = false;
-	logFileExists = false;
 	if (setenv("TZ", "", 1) != 0) printf("setenv() error: %s", strerror(errno));
+	utcTime = time(NULL);
+	cfgGnssOk = false; cfgInfOk = false; cfgLogfilterOk = false; cfgMsgOk = false; cfgNavOk = false;
+	cfgOdoOk = false; cfgPmOk = false; cfgPmsOk = false; cfgPrtOk = false; cfgRateOk = false; cfgRstOk = false;
+	cfgRxmOk = false;  cfgSbasOk = false; cfgSlasOk = false; cfgTpOk = false; cfgNmeaOk = false; cfgCfgOk = false;
+	cfgGeofenceOk = false; resetOdoOk = false; logCreateOk = false; logEraseOk = false;
 }
 
-void Gnss::tp() {
+/*void Gnss::tp() {
   struct timeval tv;
   tv.tv_usec = 0;
   if (ttp) { //use this with timTp message only
@@ -33,40 +38,85 @@ void Gnss::tp() {
 	  settimeofday(&tv, NULL); //use this with normal time info such as navPvt, etc
 	  pps = true;
   }
-}
+}*/
 
-int Gnss::begin(const char * dev, speed_t baudRate) {
-	fd = open(dev, O_RDWR | O_NOCTTY | O_SYNC);
+int Gnss::begin(const char * dev, speed_t rate) {
+	int flags;
+	printf("opening dev %s\n", dev); 
+	fd = open(dev, O_RDWR | O_NOCTTY);
 	if (fd < 0) {
-		printf("error opening device %s: %s\n", dev, strerror(errno)); return -1;
+		printf("error opening device %s: %s\n", dev, strerror(errno));  return -1;
+	}
+	//printf("getting cntl flags\n");
+	if ((flags = fcntl(fd, F_GETFL)) == -1) {
+		printf("fnctl GETFL error: %s", strerror(errno));  return -1;
+	}
+	//configure signal-driven non-blocking IO
+	//printf("setting cntl flags\n");
+	if (fcntl(fd, F_SETFL, flags | O_ASYNC | O_NONBLOCK) == -1) {
+		printf("fnctl F_SETFL(flags | O_ASYNC | O_NONBLOCK) error: %s", strerror(errno));  return -1;
 	}
 	struct termios settings;
 	memset(&settings, 0, sizeof(termios));
+	//printf("getting termios settings\n");
 	if (tcgetattr(fd, &settings) != 0) {
-		printf("tcgetattr() error: %s\n", strerror(errno));
+		printf("tcgetattr() error: %s\n", strerror(errno)); 
 		return -1;
 	}
+	//printf("switching to raw processing\n");
 	cfmakeraw(&settings); //switch to raw packet processing
-
-	if (cfsetspeed(&settings, baudRate) != 0) {
-		printf("cfsetspeed() error: %s\n", strerror(errno));
+	printf("setting termios speed\n");
+	if (cfsetspeed(&settings, rate) != 0) {
+		printf("cfsetspeed() error: %s\n", strerror(errno)); 
 		return -1;
 	}
-	this->baudRate = baudRate;
-	settings.c_cflag &= ~CSTOPB; //1 stop bit
+	switch (rate) {
+		case B4800: this->gnssPort.baudRate = BAUD_RATE_4800; break;
+		case B9600: this->gnssPort.baudRate = BAUD_RATE_9600; break;
+		case B19200: this->gnssPort.baudRate = BAUD_RATE_19200; break;
+		case B38400: this->gnssPort.baudRate = BAUD_RATE_38400; break;
+		case B57600: this->gnssPort.baudRate = BAUD_RATE_57600; break;
+		case B115200: this->gnssPort.baudRate = BAUD_RATE_115200; break;
+		case B230400: this->gnssPort.baudRate = BAUD_RATE_230400; break;
+	}
+
 	settings.c_iflag &= ~(IXON | IXOFF | IXANY); //no software flow control
-	settings.c_cflag &= ~CRTSCTS; //no hardware flow control
+//	settings.c_iflag |= IGNBRK; //Ignore BREAK condition on input./
+//	settings.c_iflag |= IGNCR; //Ignore carriage return on input
+//	settings.c_iflag &= ~(IXON | IXOFF | INPCK | ISTRIP | INLCR | IGNPAR); //no software flow control, 
+																  //no parity checking, 
+																  //do not strip off 8th bit
+																  //do not translate NL to CR on input
+																  //do not gnore framing errors and parity errors
+//	settings.c_cflag |= CS8; //8-bit - set by cfmakeraw() as well as no parity (~PARENB)
+	settings.c_cflag &= ~(CSTOPB | CRTSCTS);//1 stop bit, no hardware flow control
+//	settings.c_cflag &= ~(CSTOPB | CRTSCTS | PARENB | HUPCL | CSIZE); //1 stop bit
+													 //no hardware flow control
+	                                                 //no parity
+													 //do not hang up after last process closes the device
+//	settings.c_cflag |= CREAD; //enable receiver
+//	settings.c_cflag |= CLOCAL; //Ignore modem control lines
+
+//	settings.c_oflag &= ~(OPOST | ONLCR | OCRNL | ONOCR | ONLRET | OFILL); //no implementation-defined output processing
+											//do not map NL to CR-NL on output
+											//do not map CR to NL on output
+											//output CR at column 0
+											//output CR
+											//do not send fill characters for a delay, use a timed delay
+											
+//	settings.c_lflag &= ~(ISIG | ICANON | ECHO | TOSTOP | IEXTEN); //do not generate the corresponding signal, When any of the characters INTR, QUIT, SUSP, or DSUSP are received
+	                                      //disable canonical mode
+	                                      //do not echo input symbol
+	                                      //do not send  the SIGTTOU signal to the process group of a background process which tries to write to its controlling termina
+										  //no implementation-defined  input  processing
 	settings.c_cc[VMIN] = 0; //minimum number of char to read
-	settings.c_cc[VTIME] = 0; //timeout in decisec (3 sec)
-	if ((tcsetattr(fd, TCSANOW, &settings)) != 0) {
+	settings.c_cc[VTIME] = 0; //timeout in decisec
+	//printf("setting other termios flags\n");
+	if ((tcsetattr(fd, TCSAFLUSH, &settings)) != 0) {
 		printf("error in setting dev %s attributes: %s\n", dev, strerror(errno));
 		return -1;
 	}
-	sleep(1);
-	if (tcflush(fd, TCIOFLUSH) != 0) {
-		printf("error flushing input and output queues of device %s: %s\n", dev, strerror(errno));
-		return -1;
-	}
+
 
 #ifdef DEBUG_LEVEL_UBX
   InfoMsgMask mask = 0;
@@ -90,41 +140,48 @@ int Gnss::begin(const char * dev, speed_t baudRate) {
   }
   setCfgInf(mask, NMEA);
 #endif
+  printf("marking gps as ready\n");
+  size_t len = strlen(dev) + 1;
+  device = (char *)malloc(len);
+  strncpy(device, dev, len);
+  isReady = true;
   return 0;
 }
 
 void Gnss::end() {
-	if (fd > 0) {
-		tcflush(fd, TCIOFLUSH);
+	if (isReady) {
+		isReady = false;
+		tcdrain(fd);
+		tcflush(fd, TCIFLUSH);
 		close(fd);
-		fd = 0;
+		free(device);
 	}
 }
 
-void Gnss::calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload) {
-      checksum[0] = 0;
-	  checksum[1] = 0;
-      checksum[0] += msgClass;
-	  checksum[1] += checksum[0];
-	  checksum[0] += msgId;
-	  checksum[1] += checksum[0];		
-	  checksum[0] += (uint8_t)(len & 0xFF); 
-	  checksum[1] += checksum[0];
-	  checksum[0] += (uint8_t)(len >> 8);
-	  checksum[1] += checksum[0];
+void Gnss::calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload, Checksum * checksum) {
+      checksum->checksum0 = 0;
+	  checksum->checksum1 = 0;
+      checksum->checksum0 += msgClass;
+	  checksum->checksum1 += checksum->checksum0;
+	  checksum->checksum0 += msgId;
+	  checksum->checksum1 += checksum->checksum0;		
+	  checksum->checksum0 += (uint8_t)(len & 0xFF); 
+	  checksum->checksum1 += checksum->checksum0;
+	  checksum->checksum0 += (uint8_t)(len >> 8);
+	  checksum->checksum1 += checksum->checksum0;
 
 	  if (pload != NULL) {
 	  	  for (uint16_t i = 0; i < len; i++) {
-		  	  checksum[0] += pload[i];
-			  checksum[1] += checksum[0];
+		  	  checksum->checksum0 += pload[i];
+			  checksum->checksum1 += checksum->checksum0;
 		  }
 	  }
 }
 
 void Gnss::nmeaVerifyChecksum()  {
 	uint8_t x = 0, hex, high_byte = 0, low_byte = 0;
-	uint16_t len = nmeaPayload.length();
-	const char * cstring = nmeaPayload.c_str();
+	uint16_t len = nmeaBuffer.length();
+	const char * cstring = nmeaBuffer.c_str();
 
 	for (uint8_t i = 0; i < len; i++) {
 		x ^= cstring[i];
@@ -141,18 +198,20 @@ void Gnss::nmeaVerifyChecksum()  {
 
 bool Gnss::ready() {
   uint8_t c;
-  clock_t t = clock();
+  Checksum checksum;
+
   while (read(fd, &c, 1) > 0) {
+	  //printf("%c\n", c);
       if (offset < 6) {
 			switch (offset) {
 				case 0:
 					//if (nmea && (c != '\r')) printf("%c", c); else printf("%X ", c); 
 					if (c == NMEA_START) { 
 						nmea = true; //possible NMEA message as '$' can appear in UBX messages as well
-						nmeaChecksumNext = false; nmeaPayload = ""; nmeaChecksum = ""; 
+						nmeaChecksumNext = false; nmeaBuffer = ""; nmeaChecksum = ""; error = NO_ERROR;
 					}
 					else if (c == SYNC_CHARS[0]) { //most likely UBX message as NMEA seems to be using ASCII chars only
-						offset = 1; nmea = false; endOfNavEpoch = false; continue;
+						offset = 1; nmea = false; endOfNavEpoch = false; error = NO_ERROR; continue;
 					}
 					break;
 				case 1:
@@ -162,22 +221,24 @@ bool Gnss::ready() {
 					} else offset = 2;
 					break;					
 				case 2:
-					//printf(" Receiving UBX...");
-				    //printf(" msgCls %X", c);  
+					if (DEBUG_UBX) {
+						printf(" Receiving UBX...");
+						printf(" msgCls %X", c);
+					}
 					messageClass = c;
 					offset = 3;
 					break;
 				case 3:					
-				    //printf(", msgId %X", c);  
+					if (DEBUG_UBX) printf(", msgId %X", c);
 					messageId = c;
 					offset = 4;
 					break;
 				case 4: payloadLength = c; offset = 5; break;
 				case 5: 
 					payloadLength |= (((uint16_t)c) << 8); 
-					//printf(", len %u, payload: ", payloadLength);
-					payload = (uint8_t *)realloc(payload, payloadLength); 
-					if (payload == NULL && payloadLength > 0) { offset = 0; error = OUT_OF_MEMORY; return true;}
+					if (DEBUG_UBX) printf(", len %u, payload: ", payloadLength);
+					buffer = (uint8_t *)malloc(payloadLength);
+					if (buffer == NULL && payloadLength > 0) { offset = 0; error = OUT_OF_MEMORY; return true;}
 					offset = 6;
 					break;
 			}			
@@ -185,38 +246,42 @@ bool Gnss::ready() {
 	  }
       else { //offset >= 6
 			if ((offset < (payloadLength + 6))) {
-				payload[offset - 6] = c;
-				//printf("%X ", c);
+				buffer[offset - 6] = c;
+				if (DEBUG_UBX) printf("%X ", c);
 				offset++;
 			}
 			else if (offset == payloadLength + 6) {
-				calculateChecksum(messageClass, messageId, payloadLength, payload);
-				//printf(" calculated checksum0 %X, checksum1 %X", checksum[0], checksum[1]);
-				if (c == checksum[0]) offset++;
+				calculateChecksum(messageClass, messageId, payloadLength, buffer, &checksum);
+				if (DEBUG_UBX) printf(" calculated checksum0 %X, checksum1 %X;", checksum.checksum0, checksum.checksum1);
+				if (c == checksum.checksum0) offset++;
 				else {
 					offset = 0;
-					//printf("checksum0 %X - wrong checksum0: %X", checksum[0], c);
+					printf("checksum0 %X - wrong checksum0: %X", checksum.checksum0, c);
 					error = CHECKSUM_ERROR; 
 					return true;
 				}
-				//printf(" receieved chksum0 %X", c);
+				if (DEBUG_UBX) printf(" received chksum0 %X", c);
 			}
 			else if (offset == payloadLength + 7) {
 			  offset = 0;
-			  //printf(", chksum1 %X\n", c);
-			  if (c == checksum[1])	{
+			  if (DEBUG_UBX) printf(", chksum1 %X\n", c);
+			  if (c == checksum.checksum1)	{
 				if (messageClass == UBX_NAV && messageId == NAV_EOE) { 
 					//printf("end of nav epoch\n");
 					endOfNavEpoch = true; 
-					iTOW = *(uint32_t *)payload; 
+					iTOW = *(uint32_t *)buffer;
 				}
 				error = NO_ERROR;
+				payload = (uint8_t *)malloc(payloadLength);
+				if (payload == NULL && payloadLength > 0) { offset = 0; error = OUT_OF_MEMORY; return true; }
+				memcpy(payload, buffer, payloadLength);
+				free(buffer);
 				return true;
 			  }
 			  else {
-				//printf("checksum1 %X - wrong checksum1: %X\n", checksum[1], c);
-				error = CHECKSUM_ERROR; 
-				return true;
+				printf("checksum1 %X - wrong checksum1: %X\n", checksum.checksum1, c);
+				error = CHECKSUM_ERROR;
+				return true;				
 			  }
 			}
 	  }
@@ -229,10 +294,10 @@ bool Gnss::ready() {
 		   case '\n': 
 				nmea = false;
 				nmeaVerifyChecksum();
-				//printf("%s*%s\n", nmeaPayload.c_str(), nmeaChecksum.c_str());
+				if (DEBUG_NMEA) printf("Received NMEA: %s*%s\n", nmeaBuffer.c_str(), nmeaChecksum.c_str());
 				if (nmeaValid) {
-					if (nmeaPayload.length() >= 5) {
-						cls = nmeaPayload.substr(2, 3);
+					if (nmeaBuffer.length() >= 5) {
+						cls = nmeaBuffer.substr(2, 3);
 						if (cls == "RMC") { messageClass = UBX_NMEA; messageId = NMEA_RMC; }
 						else if (cls == "VTG") { messageClass = UBX_NMEA; messageId = NMEA_VTG; }
 						else if (cls == "GGA") { messageClass = UBX_NMEA; messageId = NMEA_GGA; }
@@ -248,12 +313,12 @@ bool Gnss::ready() {
 						else if (cls == "GRS") { messageClass = UBX_NMEA; messageId = NMEA_GRS; }
 						else if (cls == "TXT") { messageClass = UBX_NMEA; messageId = NMEA_TXT; }
 					}
-					if (nmeaPayload.length() >= 4) {
-						cls = nmeaPayload.substr(0, 4);
+					if (nmeaBuffer.length() >= 4) {
+						cls = nmeaBuffer.substr(0, 4);
 						if (cls == "PUBX") {
 							messageClass = UBX_PUBX;
-							if (nmeaPayload.length() >= 7) {
-								msgId = nmeaPayload.substr(5, 2);
+							if (nmeaBuffer.length() >= 7) {
+								msgId = nmeaBuffer.substr(5, 2);
 								if (msgId == "41") messageId = PUBX_CONFIG;
 								else if (msgId == "00") messageId = PUBX_POSITION;
 								else if (msgId == "40") messageId = PUBX_RATE;
@@ -262,253 +327,249 @@ bool Gnss::ready() {
 							}
 						}
 					}
+					nmeaPayload = nmeaBuffer;
 					return true;
 				}
-				else { printf("nmea checksum error: %s\n", nmeaPayload); return false; }
+				else { printf("nmea checksum error: %s\n", nmeaBuffer.c_str());  return false; }
 		    default: 
-				if (!nmeaChecksumNext) nmeaPayload += char(c); 
-				else {
-					nmeaChecksum += char(c);
-				}
+				if (!nmeaChecksumNext) nmeaBuffer += char(c);
+				else nmeaChecksum += char(c);
 				break;
 		}
 	  }
-  }
-  t = ((clock() - t) * 1000000) / CLOCKS_PER_SEC; //execution delay from the start of the function in microseconds
-												  //substract it from theoretical delay between characters arriving to
-                                                  //serial port at a given baudrate (bit per sec): 
-                                                  // delay in seconds = 1/(baudrate/10bits); where 10bits = 1 start + 8 data + 1 stop
-  //to avoid 100% CPU exhaustion, need to rest and share
-  switch (baudRate) {
-	case B4800: if (t < 2083) usleep(2083 - t); break;
-	case B9600: if (t < 1042) usleep(1042 - t); break;
-	case B19200: if (t < 520) usleep(520 - t); break;
-	case B38400: if (t < 260) usleep(260 - t); break;
-	case B57600: if (t < 174) usleep(174 - t); break;
-	case B115200: if (t < 87) usleep(87 - t); break;
-	case B230400: if (t < 43) usleep(43 - t); break;
   }
   return false;
 }
 
 void Gnss::poll(uint8_t msgClass, uint8_t msgId, uint16_t payload_length, uint8_t* pload) {
+	if (!isReady) {
+		printf("GNSS receiver is not ready - please open a port first\n"); return;
+	}
+
+	int bytesWritten = 0, bufferOffset = 0;
 	pollMessageClass = msgClass;
 	pollMessageId = msgId;
 	pollPayload = pload;
 	pollPayloadLength = payload_length;
-	calculateChecksum(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload);
+	Checksum checksum;
+	calculateChecksum(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload, &checksum);
 	uint16_t packetSize = payload_length + 8;
-	uint8_t* buffer = (uint8_t*)malloc(packetSize);
-	if (buffer == NULL) {
+	uint8_t* buf = (uint8_t*)malloc(packetSize);
+	if (buf == NULL) {
 		printf("poll(): malloc() error - buffer is null, packet size %u\n", packetSize); return;
 	}
-	buffer[0] = SYNC_CHARS[0];
-	buffer[1] = SYNC_CHARS[1];
-	buffer[2] = msgClass;
-	buffer[3] = msgId;
-	buffer[4] = payload_length & 0xFF;
-	buffer[5] = payload_length >> 8;
+	buf[0] = SYNC_CHARS[0];
+	buf[1] = SYNC_CHARS[1];
+	buf[2] = msgClass;
+	buf[3] = msgId;
+	buf[4] = payload_length & 0xFF;
+	buf[5] = payload_length >> 8;
 
-	//printf("Sending... msgCls %X", pollMessageClass);
-	//printf(", msgID %X", pollMessageId);
-	//printf(", len0 %X", ttt);
-	//printf(", len1 %X", ttt);
-	//printf(", len %u", pollPayloadLength);
+	if (DEBUG_UBX) {
+		printf("Sending UBX... msgCls %X", pollMessageClass);
+		printf(", msgID %X", pollMessageId);
+		printf(", len %u", pollPayloadLength);
+	}
 	if (pload != NULL)
 	{
-		//printf(", payload: ");
+		if (DEBUG_UBX) printf(", payload: ");
+		memcpy(buf + 6, pload, payload_length); 
 		for (uint16_t i = 0; i < payload_length; i++)
-		{
-			buffer[i + 6] = pload[i];
-			//printf(" %X", pload[i]);
-		}
+			if (DEBUG_UBX) printf(" %X", buf[i + 6]);
 	}
-	//printf(", cksum0 %X", checksum[0]);
-	//printf(", cksum1 %X\n", checksum[1]);
-	buffer[payload_length + 6] = checksum[0];
-	buffer[payload_length + 7] = checksum[1];
-	if (write(fd, buffer, packetSize) != packetSize) printf("poll(): write() error %d\n", errno);
-	tcdrain(fd);
-	free(buffer);
-}
+	if (DEBUG_UBX) {
+		printf(", cksum0 %X", checksum.checksum0);
+		printf(", cksum1 %X\n", checksum.checksum1);
+	}
+	buf[payload_length + 6] = checksum.checksum0;
+	buf[payload_length + 7] = checksum.checksum1;
 
-bool Gnss::pollNoError(uint32_t timeout) {
-	uint32_t starttime = time(NULL);
-	while (difftime(time(NULL), starttime) < timeout) {
-		if (ready() && messageClass == pollMessageClass && messageId == pollMessageId) {
-			switch (error) {
-				case NO_ERROR: return true;
-				case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
-				case OUT_OF_MEMORY: printf("out of memory\n"); return false;
-			}
+	while (bytesWritten < packetSize) {
+		if ((bytesWritten = write(fd, &(buf[bufferOffset]), packetSize)) == -1) {
+			printf("poll(): write() error %s\n", strerror(errno));
+			return;
 		}
+		tcdrain(fd);
+		bufferOffset += bytesWritten;
+		packetSize -= bytesWritten;
 	}
-	printf("poll timeout\n");
-	return false;
-}
-
-bool Gnss::ackNoError(uint32_t timeout) {
-	uint32_t starttime = time(NULL);
-	while (difftime(time(NULL), starttime) < timeout) {
-		if (ready() && messageClass == UBX_ACK) {
-			UbxAck* ack = (UbxAck*)(payload);
-			switch (error) {
-				case NO_ERROR:
-					if (ack->classId == pollMessageClass && ack->messageId == pollMessageId) {
-						if (messageId == ACK_ACK) return true;
-						else return false;//ACK_NAK
-					}
-					else break;
-				case CHECKSUM_ERROR: poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); printf("chksum err\n"); break;
-				case OUT_OF_MEMORY: printf("out of memory\n"); return false;
-			}
-		}
-	}
-	printf("ack timeout\n");
-	return false;
+	free(buf);
+	delay();
 }
 
 void Gnss::get() {
-	if(ready() && error == NO_ERROR) {
-		switch(messageClass) {
+	if (ready()) {
+		switch (error) {
+			case NO_ERROR: 
+			switch (messageClass) {
 			case UBX_NAV:
-				switch(messageId) {
-				  case NAV_CLOCK: navClock(); break; 
-				  case NAV_DGPS: navDgps(); break; 
-				  case NAV_DOP: navDop(); break; 
-				  case NAV_GEOFENCE: navGeoFence(); break; 
-				  case NAV_ODO: navOdo(); break; 
-				  case NAV_ORB: navOrb(); break; 
-				  case NAV_POSLLH: navPosLlh(); break; 
-				  case NAV_PVT: navPvt(); break; 
-				  case NAV_SAT: navSat(); break; 
-				  case NAV_SBAS: navSbas(); break; 
-				  case NAV_SLAS: navSlas(); break; 
-				  case NAV_TIMEBDS: navTimeBds(); break; 
-				  case NAV_TIMEGAL: navTimeGal(); break; 
-				  case NAV_TIMEGLO: navTimeGlo(); break; 
-				  case NAV_TIMEGPS: navTimeGps(); break; 
-				  case NAV_TIMELS: navTimeLs(); break; 
-				  case NAV_TIMEUTC: navTimeUtc(); break; 
+				switch (messageId) {
+				case NAV_EOE: break;
+				case NAV_CLOCK: navClock(); break;
+				case NAV_DGPS: navDgps(); break;
+				case NAV_DOP: navDop(); break;
+				case NAV_GEOFENCE: navGeoFence(); break;
+				case NAV_ODO: navOdo(); break;
+				case NAV_ORB: navOrb(); break;
+				case NAV_POSECEF: navPosEcef(); break;
+				case NAV_POSLLH: navPosLlh(); break;
+				case NAV_PVT: navPvt(); break;
+				case NAV_SAT: navSat(); break;
+				case NAV_SBAS: navSbas(); break;
+				case NAV_SLAS: navSlas(); break;
+				case NAV_STATUS: navStatus(); break;
+				case NAV_TIMEBDS: navTimeBds(); break;
+				case NAV_TIMEGAL: navTimeGal(); break;
+				case NAV_TIMEGLO: navTimeGlo(); break;
+				case NAV_TIMEGPS: navTimeGps(); break;
+				case NAV_TIMELS: navTimeLs(); break;
+				case NAV_TIMEUTC: navTimeUtc(); break;
+				case NAV_VELECEF: navVelEcef(); break;
+				case NAV_VELNED: navVelNed(); break;
+				default: printf("UBX-NAV-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_CFG:
-				switch(messageId) {
-					case CFG_GNSS: cfgGnss(); break;
-					case CFG_INF: cfgInf(); break;
-					case CFG_LOGFILTER: cfgLogFilter(); break;
-					case CFG_MSG: cfgMsg(); break;
-					case CFG_NAV5: cfgNav(); break;
-					case CFG_ODO: cfgOdo(); break;
-					case CFG_PM2: cfgPm(); break;
-					case CFG_PMS: cfgPms(); break;
-					case CFG_PRT: cfgPrt(); break;
-					case CFG_PWR: cfgPwr(); break;
-					case CFG_RATE: cfgRate(); break;
-					case CFG_RXM: cfgRxm(); break;
-					case CFG_SBAS: cfgSbas(); break;
-					case CFG_SLAS: cfgSlas(); break;
-					case CFG_TP5: cfgTp(); break;
-					case CFG_GEOFENCE: cfgGeoFence(); break;
-					case CFG_NMEA: cfgNmea(); break;
+				switch (messageId) {
+				case CFG_GNSS: cfgGnss(); break;
+				case CFG_INF: cfgInf(); break;
+				case CFG_LOGFILTER: cfgLogFilter(); break;
+				case CFG_MSG: cfgMsg(); break;
+				case CFG_NAV5: cfgNav(); break;
+				case CFG_ODO: cfgOdo(); break;
+				case CFG_PM2: cfgPm(); break;
+				case CFG_PMS: cfgPms(); break;
+				case CFG_PRT: cfgPrt(); break;
+				case CFG_PWR: cfgPwr(); break; //deprecated in protocol > 17
+				case CFG_RATE: cfgRate(); break;
+				case CFG_RXM: cfgRxm(); break;
+				case CFG_SBAS: cfgSbas(); break;
+				case CFG_SLAS: cfgSlas(); break;
+				case CFG_TP5: cfgTp(); break;
+				case CFG_GEOFENCE: cfgGeoFence(); break;
+				case CFG_NMEA: cfgNmea(); break;
+				default: printf("UBX-CFG-%X has no function handler\n", messageId); break;
 				} break;
-			case UBX_MON: 
-				switch(messageId) {
-					case MON_VER: monVer(MON_VER_EXTENSION_NUMBER); break;
-					case MON_GNSS: monGnss(); break;
-					case MON_PATCH: monPatch(); break;
+			case UBX_MON:
+				switch (messageId) {
+				case MON_VER: monVer(MON_VER_EXTENSION_NUMBER); break;
+				case MON_GNSS: monGnss(); break;
+				case MON_PATCH: monPatch(); break;
+				default: printf("UBX-MON-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_TIM:
-				switch(messageId) {
-					case TIM_TM2: timTm(); break;
-					case TIM_TP: timTp(); break;
+				switch (messageId) {
+				case TIM_TM2: timTm(); break;
+				case TIM_TP: timTp(); break;
+				default: printf("UBX-TIM-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_LOG:
-				switch(messageId) {
-					case LOG_INFO: logInfo(); break;
-					case LOG_RETRIEVEPOS: logRetrievePos(); break;
-					case LOG_RETRIEVEPOSEXTRA: logRetrievePosExtra(); break;
-					case LOG_RETRIEVESTRING: logRetrieveString(); break;
-					case LOG_FINDTIME: logFindTime(); break;
+				switch (messageId) {
+				case LOG_INFO: logInfo(); break;
+				case LOG_RETRIEVEPOS: logRetrievePos(); break;
+				case LOG_RETRIEVEPOSEXTRA: logRetrievePosExtra(); break;
+				case LOG_RETRIEVESTRING: logRetrieveString(); break;
+				case LOG_FINDTIME: logFindTime(); break;
+				default: printf("UBX-LOG-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_INF:
 				char infLevel[8];
 				switch (messageId) {
-					case INF_DEBUG: sprintf(infLevel, "debug"); break;
-					case INF_ERROR: sprintf(infLevel, "error"); break;
-					case INF_NOTICE: sprintf(infLevel, "notice"); break;
-					case INF_TEST: sprintf(infLevel, "test"); break;
-					case INF_WARNING: sprintf(infLevel, "warning"); break;
-					default: sprintf(infLevel, "unknown"); break;
+				case INF_DEBUG: sprintf(infLevel, "debug"); break;
+				case INF_ERROR: sprintf(infLevel, "error"); break;
+				case INF_NOTICE: sprintf(infLevel, "notice"); break;
+				case INF_TEST: sprintf(infLevel, "test"); break;
+				case INF_WARNING: sprintf(infLevel, "warning"); break;
+				default: sprintf(infLevel, "unknown"); break;
 				}
 				infMsg(infLevel);
 				break;
 			case UBX_ACK:
-				switch(messageId) {
-					case ACK_ACK: ackAck(); break;
-					case ACK_NAK: ackNak(); break;
+				switch (messageId) {
+				case ACK_ACK: ackAck(); break;
+				case ACK_NAK: ackNak(); break;
 				} break;
 			case UBX_NMEA:
-				switch(messageId) {
-					case NMEA_RMC: nmeaRmc(); break;
-					case NMEA_VTG: nmeaVtg(); break;
-					case NMEA_GGA: nmeaGga(); break;
-					case NMEA_GSA: nmeaGsa(); break;
-					case NMEA_GSV: nmeaGsv(); break;
-					case NMEA_GLL: nmeaGll(); break;
-					case NMEA_GST: nmeaGst(); break;
-					case NMEA_VLW: nmeaVlw(); break;
-					case NMEA_GNS: nmeaGns(); break;
-					case NMEA_ZDA: nmeaZda(); break;
-					case NMEA_GBS: nmeaGbs(); break;
-					case NMEA_DTM: nmeaDtm(); break;
-					case NMEA_GRS: nmeaGrs(); break;
-					case NMEA_TXT: nmeaTxt(); break;
+				switch (messageId) {
+				case NMEA_RMC: nmeaRmc(); break;
+				case NMEA_VTG: nmeaVtg(); break;
+				case NMEA_GGA: nmeaGga(); break;
+				case NMEA_GSA: nmeaGsa(); break;
+				case NMEA_GSV: nmeaGsv(); break;
+				case NMEA_GLL: nmeaGll(); break;
+				case NMEA_GST: nmeaGst(); break;
+				case NMEA_VLW: nmeaVlw(); break;
+				case NMEA_GNS: nmeaGns(); break;
+				case NMEA_ZDA: nmeaZda(); break;
+				case NMEA_GBS: nmeaGbs(); break;
+				case NMEA_DTM: nmeaDtm(); break;
+				case NMEA_GRS: nmeaGrs(); break;
+				case NMEA_TXT: nmeaTxt(); break;
+				default: printf("UBX-NMEA-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_PUBX:
-				switch(messageId) {
-					case PUBX_POSITION: pubxPosition(); break;
-					case PUBX_SVSTATUS: pubxSvStatus(); break;
-					case PUBX_TIME: pubxTime(); break;
+				switch (messageId) {
+				case PUBX_POSITION: pubxPosition(); break;
+				case PUBX_SVSTATUS: pubxSvStatus(); break;
+				case PUBX_TIME: pubxTime(); break;
+				default: printf("UBX-PUBX-%X has no function handler\n", messageId); break;
 				} break;
+			default: printf("MsgClass %X, msgId %X has no function handler\n", messageClass, messageId);
+			} break;
+			case CHECKSUM_ERROR: 
+				poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); 
+				printf("chksum err: msgClass %x, msgId %x\n", pollMessageClass, pollMessageId); 
+				break;
+			case OUT_OF_MEMORY: printf("out of memory\n"); break;
+			default: printf("MsgClass %X, msgId %X: unknown error\n", messageClass, messageId);
 		}
+
 	}
 }
 
 void Gnss::navClock() {
-  NavClock * p = (NavClock *)payload;
-  printf("u-blox Clock: iTow %lums, bias %ldns, drift %ldns/s, tAcc %luns, fAcc %lups/s\n", p->iTOW, p->clkB, p->clkD, p->tAcc, p->fAcc);
+  gnssNavClock = *((NavClock *)payload);
+  printf("u-blox Clock: iTow %ums, bias %dns, drift %dns/s, tAcc %uns, fAcc %ups/s\n", gnssNavClock.iTOW, gnssNavClock.clkB, gnssNavClock.clkD, gnssNavClock.tAcc, gnssNavClock.fAcc);
+  free(payload);
 }
 
 void Gnss::navDgps() {
   DGPSCorrData * p = NULL;
   NavDGPS * dgps = (NavDGPS *)payload;
+  char s[16]; memset(s, 0, sizeof(s));
+  switch (dgps->status) {
+  case 0: sprintf(s, "none"); break;
+  case 1: sprintf(s, "PR+PRR"); break;
+  }
   
+  printf("DGPS: iTOW %u, age %dms, baseId %d, baseHealth %d, numCh %u, status %s\n", dgps->iTOW, dgps->age, dgps->baseId, dgps->baseHealth, dgps->numCh, s);
   for (uint8_t i = 0; i < dgps->numCh; i++) {
     p = (DGPSCorrData *)(payload + sizeof(NavDGPS) * i);
     if (p->flags.used) {
 		printf("DGPS stationId %u, health %u, status %u: svid %u, channel %u, used %u, age %ums, prc %fm, prrc %fm/s\n", dgps->baseId, dgps->baseHealth, dgps->status, p->svid, p->flags.channel, p->flags.used, p->ageC, (double)(p->prc), (double)(p->prrc));		
 	}
   }
+  free(payload);
 }
 
 void Gnss::navDop() {
-	NavDOP * p = (NavDOP *)payload;
-	printf("DOP iTOW %lu, gDOP %u, pDOP %u, tDOP %u, vDOP %u, hDOP %u, nDOP %u, eDOP %u 10^-2\n", p->iTOW, p->gDOP, p->pDOP, p->tDOP, p->vDOP, p->hDOP, p->nDOP, p->eDOP);	
+	gnssNavDop = *((NavDOP *)payload);
+	printf("DOP iTOW %u, gDOP %u, pDOP %u, tDOP %u, vDOP %u, hDOP %u, nDOP %u, eDOP %u 10^-2\n", gnssNavDop.iTOW, gnssNavDop.gDOP, gnssNavDop.pDOP, gnssNavDop.tDOP, gnssNavDop.vDOP, gnssNavDop.hDOP, gnssNavDop.nDOP, gnssNavDop.eDOP);
+  free(payload);
 }
 
 void Gnss::navGeoFence() {
-	NavGeofence * p = (NavGeofence *)payload;
+	gnssNavGeoFence = *((NavGeofence *)payload);
 	
 	char g[8];
 
-	switch(p->combState) {
+	switch(gnssNavGeoFence.combState) {
 		case UKNOWN_GEOFENCE_STATE: sprintf(g, "Unknown"); break;
 		case INSIDE_GEOFENCE_STATE: sprintf(g, "Inside"); break;
 		case OUTSIDE_GEOFENCE_STATE: sprintf(g, "Outside"); break;
 	}
-	printf("GeoFence iTOW %lu, status %u, numFences %u, combState %s\n", p->iTOW, p->status, p->numFences, g);
+	printf("GeoFence iTOW %u, status %u, numFences %u, combState %s\n", gnssNavGeoFence.iTOW, gnssNavGeoFence.status, gnssNavGeoFence.numFences, g);
 	
-	for (uint8_t i = 0; i < p->numFences; i++) {
+	for (uint8_t i = 0; i < gnssNavGeoFence.numFences; i++) {
 		switch(*(payload + sizeof(NavGeofence) + 2 * i)) {
 			case UKNOWN_GEOFENCE_STATE: sprintf(g, "Unknown"); break;
 			case INSIDE_GEOFENCE_STATE: sprintf(g, "Inside"); break;
@@ -517,21 +578,36 @@ void Gnss::navGeoFence() {
 		printf("fenceId %u: state %s ", i, g);		
 	}
 	printf("\n");
+  free(payload);
 }
 
 void Gnss::navOdo() {
-  NavODO * p = (NavODO *)payload;
-  printf("navODO iTOW %lu, distance %lu +/- %lum, total %lum\n", p->iTOW, p->distance, p->distanceStd, p->totalDistance);
+	gnssOdo = *((NavODO *)payload);
+  printf("navODO iTOW %u, distance %u +/- %um, total %um\n", gnssOdo.iTOW, gnssOdo.distance, gnssOdo.distanceStd, gnssOdo.totalDistance);
+  free(payload);
 }
 
 void Gnss::navOrb() {
 	NavOrb * o = (NavOrb *)payload;
 	OrbData * p = NULL;
+	char g[8];
+	
 	
 	uint8_t u1, u2;
 	for (uint8_t i = 0; i < o->numSv; i++) {
 		p = (OrbData *)(payload + sizeof(NavOrb) + i * sizeof(OrbData));
-		printf("gnssId %u svId %u, status ", p->gnssId, p->svId);
+		memset(g, 0, sizeof(g));
+		switch (p->gnssId) {
+		case GPS_ID: strcat(g, "GPS"); break;
+		case SBAS_ID: strcat(g, "SBAS"); break;
+		case Galileo_ID: strcat(g, "Galileo"); break;
+		case BeiDou_ID: strcat(g, "BeiDou"); break;
+		case IMES_ID: strcat(g, "IMES"); break;
+		case QZSS_ID: strcat(g, "QZSS"); break;
+		case GLONASS_ID: strcat(g, "GLONASS"); break;
+		default: strcat(g, "unknown"); break;
+		}
+		printf("gnssId %s svId %u, status ", g, p->svId);
 		switch(p->svFlags.health) {
 			case UNKNOWN: printf("Unknown"); break;
 			case HEALTHY: printf("Healthy"); break;
@@ -595,9 +671,9 @@ void Gnss::navOrb() {
 				printf("between %u and %u days", u1, u2); 
 				break;
 		}
-		printf("; almSource ");
+		printf("; otherOrbDataType ");
 		switch(p->otherFlags.Source) {
-			case 0: printf("N/A"); break;
+			case 0: printf("No orbit data available"); break;
 			case 1: printf("AssistNowOffline"); break;
 			case 2: printf("AssistNowAutonomous"); break;
 			default:
@@ -606,30 +682,38 @@ void Gnss::navOrb() {
 		}
 		printf("\n");
 	}
+  free(payload);
+}
+
+void Gnss::navPosEcef() {
+	gnssNavPosEcef = *((NavPosEcef *)payload);
+
+	printf("PosECEF iTOW %u, x %dm, y %dm, z %dm +/- %um\n", gnssNavPosEcef.iTOW, gnssNavPosEcef.x / 100, gnssNavPosEcef.y / 100, gnssNavPosEcef.z / 100, gnssNavPosEcef.pAcc / 100);
+	free(payload);
 }
 
 void Gnss::navPosLlh() {
-	NavPosLlh * p = (NavPosLlh *)payload;
+	gnssNavPosLlh = *((NavPosLlh *)payload);
 	
 	Latitude lat;
     Longitude lon;
-    longLatToDMS(&lat, p->lat);
-    longLonToDMS(&lon, p->lon);
-	printf("PosLLH iTOW %lu, %s %s +/- %ld, alt %ld, above MSL %ld +/- %ldm\n", p->iTOW, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), p->hAcc / 1000, p->alt / 1000, p->altMSL / 1000, p->vAcc / 1000);
+    longLatToDMS(&lat, gnssNavPosLlh.lat);
+    longLonToDMS(&lon, gnssNavPosLlh.lon);
+	printf("PosLLH iTOW %u, %s %s +/- %d, alt %d, above MSL %d +/- %dm\n", gnssNavPosLlh.iTOW, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), gnssNavPosLlh.hAcc / 1000, gnssNavPosLlh.alt / 1000, gnssNavPosLlh.altMSL / 1000, gnssNavPosLlh.vAcc / 1000);
+  free(payload);
 }
 
 void Gnss::navPvt() {
-  NavPvt * navPVT = (NavPvt *)payload;
-  if (navPVT->validTime.validDate && navPVT->validTime.validTime && navPVT->validTime.fullyResolved && pps) {
+  gnssNavPvt = *((NavPvt *)payload);
+  if (gnssNavPvt.validTime.validDate && gnssNavPvt.validTime.validTime && gnssNavPvt.validTime.fullyResolved) {
 	char tt[32];
 	time_t t = time(NULL);
 	tm * time_tm = localtime(&t);
 	strftime(tt, 32, "%c", time_tm);
 	printf("NatPvt local time: %s\n", tt);
 
-    pps = false;
 	memset(time_tm, 0, sizeof(tm));
-    utcTime = mktime(gps2tm(&(navPVT->dateTime), time_tm));
+    utcTime = mktime(gps2tm(&(gnssNavPvt.dateTime), time_tm));
 	/*struct timeval tv;
 	tv.tv_sec = utcTime;
 	tc.tv_usec = 0;
@@ -637,7 +721,7 @@ void Gnss::navPvt() {
 	                          //if interrupt is attached to an arduino pin where u-blox pps output is connected
 							  //alternatively, use timTp() message and set_system_time(utcTime) will be done in pps()
     char ft[9];
-    switch (navPVT->fixType) {
+    switch (gnssNavPvt.fixType) {
       case NONE: sprintf(ft, "None"); break;
       case DR: sprintf(ft, "DR"); break;
       case TWO_D: sprintf(ft, "2D"); break;
@@ -646,7 +730,7 @@ void Gnss::navPvt() {
       case TIME_ONLY: sprintf(ft, "TimeOnly"); break;
     }
     char psm[19];
-    switch (navPVT->flags.psmState) {
+    switch (gnssNavPvt.flags.psmState) {
       case NOT_ACTIVE: sprintf(psm, "Not Active"); break;
       case ENABLED: sprintf(psm, "Enabled"); break;
       case ACQUISITION: sprintf(psm, "Acquisition"); break;
@@ -655,37 +739,38 @@ void Gnss::navPvt() {
       case INACTIVE: sprintf(psm, "Inactive"); break;
     }
     char carrSoln[6];
-    switch (navPVT->flags.carrSoln) {
+    switch (gnssNavPvt.flags.carrSoln) {
       case NONE: sprintf(carrSoln, "None"); break;
       case FLOAT: sprintf(carrSoln, "Float"); break;
       case FIXED: sprintf(carrSoln, "Fixed"); break;
     }
     Latitude lat;
     Longitude lon;
-    longLatToDMS(&lat, navPVT->lat);
-    longLonToDMS(&lon, navPVT->lon);
-    string flags = "FixOK", yes = "yes", no = "no";
-    flags += navPVT->flags.gnssFixOk ? yes : no;
-    flags += "|diffFix";
-    flags += navPVT->flags.diffSoln ? yes : no;
-    flags += "|psm";
-    flags += navPVT->flags.psmState ? yes : no;
-    flags += "|headingValid";
-    flags += navPVT->flags.headingValid ? yes : no;
-    flags += "|carrSoln";
-    flags += navPVT->flags.carrSoln ? yes : no;
+    longLatToDMS(&lat, gnssNavPvt.lat);
+    longLonToDMS(&lon, gnssNavPvt.lon);
+    string flags = "FixOK ", yes = "yes", no = "no";
+    flags += gnssNavPvt.flags.gnssFixOk ? yes : no;
+    flags += "|diffFix ";
+    flags += gnssNavPvt.flags.diffSoln ? yes : no;
+    flags += "|psm ";
+    flags += gnssNavPvt.flags.psmState ? yes : no;
+    flags += "|headingValid ";
+    flags += gnssNavPvt.flags.headingValid ? yes : no;
+    flags += "|carrSoln ";
+    flags += gnssNavPvt.flags.carrSoln ? yes : no;
 	char str[255];
-	printf(" %s %s +/- %lum\n", dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), navPVT->hAcc / 1000);
-	printf("iTOW %lu, %s +/- %luns, Fix: %s, psm %s, carrSol %s, SVs %u, alt %ldm above elipsoid, %ldm above MSL +/- %lum, pDOP %.2f, SOG %ld +/- %lum/s, heading %ld, motionHeading %ld +/- %ludeg\n", navPVT->iTOW, asctime(gmtime(&utcTime)), navPVT->tAcc, ft, psm, carrSoln, flags, navPVT->numSV, navPVT->alt / 1000, navPVT->altMSL / 1000, navPVT->altMSL / 1000, navPVT->vAcc / 1000, (double)(navPVT->pDOP / 100), navPVT->SOG / 1000, navPVT->sAcc / 1000, navPVT->heading / 100000, navPVT->motionHeading / 100000, navPVT->headAcc / 100000);
+	printf(" %s %s +/- %um\n", dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), gnssNavPvt.hAcc / 1000);
+	printf("iTOW %u, %s +/- %uns, Fix: %s, psm %s, carrSol %s, %s, SVs %u, alt %dm above elipsoid, %dm above MSL +/- %um, pDOP %.2f, SOG %d +/- %um/s, heading %d, motionHeading %d +/- %udeg\n", gnssNavPvt.iTOW, asctime(gmtime(&utcTime)), gnssNavPvt.tAcc, ft, psm, carrSoln, flags.c_str(), gnssNavPvt.numSV, gnssNavPvt.alt / 1000, gnssNavPvt.altMSL / 1000, gnssNavPvt.vAcc / 1000, (double)(gnssNavPvt.pDOP / 100.0), gnssNavPvt.SOG / 1000, gnssNavPvt.sAcc / 1000, gnssNavPvt.heading / 100000, gnssNavPvt.motionHeading / 100000, gnssNavPvt.headAcc / 100000);
   }
+  free(payload);
 }
 
 void Gnss::navSat() {
   NavSat * navSat = (NavSat *)payload;
-  printf("navSat iTOW %lu, numSVs %u\n", navSat->iTOW, navSat->numSvs);
+  printf("navSat iTOW %u, numSVs %u\n", navSat->iTOW, navSat->numSvs);
   for (uint8_t i = 0; i < navSat->numSvs; i++) {
     SatInfo * satInfo = (SatInfo *)((uint8_t *)navSat + sizeof(NavSat) + i * sizeof(SatInfo));
-    char sq[37];
+    char sq[40]; memset(sq, 0, sizeof(sq));
     switch(satInfo->flags.signalQuality) {
       case NO_SIGNAL: sprintf(sq, "None"); break;
       case SEARCHING_SIGNAL: sprintf(sq, "Searching"); break;
@@ -694,14 +779,14 @@ void Gnss::navSat() {
       case CODE_LOCKED_TIME_SYNCED: sprintf(sq, "Code locked and time synced"); break;
       default: sprintf(sq, "Code and carrier locked and time synced"); break;
     }
-    char healthy[8];
+    char healthy[8]; memset(healthy, 0, sizeof(healthy));
     switch(satInfo->flags.health)
     {
       case UNKNOWN: sprintf(healthy, "unknown"); break;
       case HEALTHY: sprintf(healthy, "Yes"); break;
       case UNHEALTHY: sprintf(healthy, "No"); break;
     }
-    char os[22];
+    char os[22]; memset(os, 0, sizeof(os));
     switch (satInfo->flags.orbitSource)
     {
       case NONE: sprintf(os, "None"); break;
@@ -711,9 +796,20 @@ void Gnss::navSat() {
       case ASSIST_NOW_AUTONOMOUS: sprintf(os, "Assist Now Autonomous"); break;
       default: sprintf(os, "Other"); break;
     }
-    char str[255];
-	printf("gnssId %u, svId %u, cno %u, elev %ddeg, azim %ddeg, prRes %dm, signalQuality %s, used %u, healthy %s, diffCorr %u, smoothed %u, orbitSrc %s, ephAvail %u, almAvail %u, anoAvail %u, aopAvail %u, sbas %u, rtcm %u, slas %u, pr %u, cr %u, do %u\n", satInfo->gnssId, satInfo->svId, satInfo->cno, satInfo->elev, satInfo->azim, satInfo->prRes, sq, satInfo->flags.svUsed, healthy, satInfo->flags.diffCorr, satInfo->flags.smoothed, os, satInfo->flags.ephAvail, satInfo->flags.almAvail, satInfo->flags.anoAvail, satInfo->flags.aopAvail, satInfo->flags.sbasCorrUsed, satInfo->flags.rtcmCorrUsed, satInfo->flags.slasCorrUsed, satInfo->flags.prCorrUsed, satInfo->flags.crCorrUsed, satInfo->flags.doCorrUsed);
+	char g[8]; memset(g, 0, sizeof(g));
+	switch (satInfo->gnssId) {
+	case GPS_ID: strcat(g, "GPS"); break;
+	case SBAS_ID: strcat(g, "SBAS"); break;
+	case Galileo_ID: strcat(g, "Galileo"); break;
+	case BeiDou_ID: strcat(g, "BeiDou"); break;
+	case IMES_ID: strcat(g, "IMES"); break;
+	case QZSS_ID: strcat(g, "QZSS"); break;
+	case GLONASS_ID: strcat(g, "GLONASS"); break;
+	default: strcat(g, "unknown"); break;
+	}
+	printf("gnssId %s, svId %u, cno %u, elev %ddeg, azim %ddeg, prRes %dm, signalQuality %s, used %u, healthy %s, diffCorr %u, smoothed %u, orbitSrc %s, ephAvail %u, almAvail %u, anoAvail %u, aopAvail %u, sbas %u, rtcm %u, slas %u, pr %u, cr %u, do %u\n", g, satInfo->svId, satInfo->cno, satInfo->elev, satInfo->azim, satInfo->prRes, sq, satInfo->flags.svUsed, healthy, satInfo->flags.diffCorr, satInfo->flags.smoothed, os, satInfo->flags.ephAvail, satInfo->flags.almAvail, satInfo->flags.anoAvail, satInfo->flags.aopAvail, satInfo->flags.sbasCorrUsed, satInfo->flags.rtcmCorrUsed, satInfo->flags.slasCorrUsed, satInfo->flags.prCorrUsed, satInfo->flags.crCorrUsed, satInfo->flags.doCorrUsed);
   }
+  free(payload);
 }
 
 void Gnss::navSbas() {
@@ -741,16 +837,19 @@ void Gnss::navSbas() {
 	if (p->services.integrity) strcat(r, "|integrity");
 	if (p->services.testMode) strcat(r, "|testMode");
 	if (r[0] == 0) sprintf(r, "N/A");
-	printf("navSbas: iTOW %lu, geo %u, mode %s, sys %s, service %s: \n", p->iTOW, p->geo, m, g, r);
+	printf("navSbas: iTOW %u, geo %u, mode %s, sys %s, service %s: \n", p->iTOW, p->geo, m, g, r);
 	
 	for (uint8_t i = 0; i < p->cnt; i++) {
 		sv = (SbasSv *)(payload + sizeof(NavSbas) + i * sizeof(SbasSv));
+		memset(g, 0, 8);
+		memset(r, 0, 40);
 		switch (sv->sys) {
 			case WAAS: sprintf(g, "WAAS"); break;
 			case EGNOS: sprintf(g, "EGNOS"); break;
 			case MSAS: sprintf(g, "MSAS"); break;
 			case GAGAN: sprintf(g, "GAGAN"); break;
 			case GPS_SYS: sprintf(g, "GPS"); break;
+			case UNKNOWN_SBAS: sprintf(g, "unknown"); break;
 		}
 		if (sv->services.ranging) strcat(r, "ranging");
 		if (sv->services.corrections) strcat(r, "|corrections");
@@ -759,21 +858,103 @@ void Gnss::navSbas() {
 		if (r[0] == 0) sprintf(r, "N/A");
 		printf("svId %u, flags %u, status %u, sys %s, service %s, pseudoRange %dcm, ionspherCorr %dcm\n", sv->svId, sv->flags, sv->status, g, r, sv->prc, sv->ic);		
 	}
+  free(payload);
 }
 
 void Gnss::navSlas() {
 	SlasSv * sv = NULL;
 	NavSlas * p = (NavSlas *)payload;
-	char f[40];
+	char f[40], g[8];
 	memset(f, 0, 40);
 	if (p->flags.gmsAvailable)  strcat(f, "gmsAvailable");
 	if (p->flags.qzssSvAvailable) strcat(f, "|qzssSvAvailable");
 	if (p->flags.testMode) strcat(f, "|testMode");
-	printf("navSlas: iTOW %lu, gmsLon %ld x 10^-3 deg, gmsLat %ld x 10^-3 deg, code %u, svId %u, flags %s\n", p->iTOW, p->gmsLon, p->gmsLat, p->gmsCode, p->gzssSvId, f);
+	printf("navSlas: iTOW %u, gmsLon %d x 10^-3 deg, gmsLat %d x 10^-3 deg, code %u, svId %u, flags %s\n", p->iTOW, p->gmsLon, p->gmsLat, p->gmsCode, p->gzssSvId, f);
 	for (uint8_t i = 0; i < p->cnt; i++) {
 		sv = (SlasSv *)(payload + sizeof(NavSlas) + i * sizeof(SlasSv));
-		printf("gnssId %u, svId %u, prc %ucm\n", sv->gnssId, sv->svId, sv->prc);
+		memset(g, 0, sizeof(g));
+		switch (sv->gnssId) {
+		case GPS_ID: strcat(g, "GPS"); break;
+		case SBAS_ID: strcat(g, "SBAS"); break;
+		case Galileo_ID: strcat(g, "Galileo"); break;
+		case BeiDou_ID: strcat(g, "BeiDou"); break;
+		case IMES_ID: strcat(g, "IMES"); break;
+		case QZSS_ID: strcat(g, "QZSS"); break;
+		case GLONASS_ID: strcat(g, "GLONASS"); break;
+		default: strcat(g, "unknown"); break;
+		}
+
+		printf("gnssId %s, svId %u, prc %ucm\n", g, sv->svId, sv->prc);
 	}
+  free(payload);
+}
+
+void Gnss::navStatus() {
+	gnssStatus = *((NavStatus *)payload);
+	char fix[10], flags[255], fixFlags[255], flags2[255], htime[128];
+	memset(fix, 0, sizeof(fix));
+	memset(flags, 0, sizeof(flags));
+	memset(flags2, 0, sizeof(flags2));
+	memset(fixFlags, 0, sizeof(fixFlags));
+	memset(htime, 0, sizeof(htime));
+	switch (gnssStatus.gpsFix) {
+	case NONE: sprintf(fix, "none"); break;
+	case DR: sprintf(fix, "DR"); break;
+	case TWO_D: sprintf(fix, "2-D"); break;
+	case THREE_D: sprintf(fix, "3-D"); break;
+	case GNSS_DR: sprintf(fix, "3-D+DR"); break;
+	case TIME_ONLY: sprintf(fix, "time-only"); break;
+	}
+
+	if (gnssStatus.flags.gpsFixOk) strcat(flags, "gpsFixOk");
+	else strcat(flags, "gpsFix invalid");
+	if (gnssStatus.flags.diffSoln) strcat(flags, "|diffSoln");
+	else strcat(flags, "|no diffSoln");
+	if (gnssStatus.flags.towSet) strcat(flags, "|TOW valid");
+	else strcat(flags, "|TOW invalid");
+	if (gnssStatus.flags.wknSet) strcat(flags, "|week number valid");
+	else strcat(flags, "|week number invalid");
+	if (gnssStatus.fixFlags.carrSolnValid) strcat(fixFlags, "carrSoln valid");
+	else strcat(fixFlags, "carrSoln invalid");
+	if (gnssStatus.fixFlags.diffCorr) strcat(fixFlags, "|diffCorr valid");
+	else strcat(fixFlags, "|diffCorr invalid");
+	switch (gnssStatus.fixFlags.mapMatching) {
+	case 0: strcat(fixFlags, "|mapMatching none"); break;
+	case 1: strcat(fixFlags, "|mapMatching valid but not used"); break;
+	case 2: strcat(fixFlags, "|mapMatching valid and used"); break;
+	case 3: strcat(fixFlags, "|mapMatching valid and used, DR enabled"); break;
+	}
+	switch (gnssStatus.flags2.carrSoln) {
+	case 0: strcat(flags2, "carrSoln none"); break;
+	case 1: strcat(flags2, "carrSoln with floating ambiguities"); break;
+	case 2: strcat(flags2, "carrSoln with fixed ambiguities"); break;
+	}
+	switch (gnssStatus.flags2.psmState) {
+	case 0: strcat(flags2, "|aquisition or psm disabled"); break;
+	case 1: strcat(flags2, "|PSM tracking"); break;
+	case 2: strcat(flags2, "|PSM power optimized tracking"); break;
+	case 3: strcat(flags2, "|PSM inactive"); break;
+	}
+	switch (gnssStatus.flags2.spoofDetState) {
+	case 0: strcat(flags2, "|spoof detection unknown or not activated"); break;
+	case 1: strcat(flags2, "|no spoofing indicated"); break;
+	case 2: strcat(flags2, "|spoofing indicated"); break;
+	case 3: strcat(flags2, "|multiple spoofing indications"); break;
+	}
+	printf("navStatus iTOW %u, uptime %s, gpsFix %s, timeToFirstFix (time tag) %us, flags %s, fixFlags %s, flags2 %s\n", gnssStatus.iTOW, humanTime(gnssStatus.uptime / 1000, (char *)htime), fix, gnssStatus.timeToFix / 1000, flags, fixFlags, flags2);
+	free(payload);
+}
+
+void Gnss::navVelEcef() {
+	gnssVelEcef = *((NavVelEcef *)payload);
+	printf("NavVelEcef iTOW %u, velocityX %.2f, velocityY %.2f, velocityZ %.2f, +/- %.2fkm/h\n", gnssVelEcef.iTOW, (double)(gnssVelEcef.velX) * 36 / 1000, (double)(gnssVelEcef.velY) * 36 / 1000, (double)(gnssVelEcef.velZ) * 36 / 1000, (double)(gnssVelEcef.sAcc) * 36 / 1000);
+	free(payload);
+}
+
+void Gnss::navVelNed() {
+	gnssVelNed = *((NavVelNed *)payload);
+	printf("NavVelNed iTOW %u, velocityNorth %.2f, velocityEast %.2f, velocityDown %.2f, speed %.2f, groundSpeed %.2f +/- %.2fkm/h, heading %d +/- %u deg\n", gnssVelNed.iTOW, (double)(gnssVelNed.velNorth) * 36 / 1000, (double)(gnssVelNed.velEast) * 36 / 1000, (double)(gnssVelNed.velDown) * 36 / 1000, (double)(gnssVelNed.speed) * 36 / 1000, (double)(gnssVelNed.groundSpeed) * 36 / 1000, (double)(gnssVelNed.sAcc) * 36 / 1000, gnssVelNed.heading < 0 ? 360 - gnssVelNed.heading / 100000 : gnssVelNed.heading / 100000, gnssVelNed.cAcc / 100000);
+	free(payload);
 }
 
 void Gnss::navTimeBds() {
@@ -781,10 +962,14 @@ void Gnss::navTimeBds() {
 	char f[32];
 	memset(f, 0, 32);
 	if (p->flags.towValid) strcat(f, "towValid");
+	else  strcat(f, "towInvalid");
 	if (p->flags.weekValid) strcat(f, "|weekValid");
+	else strcat(f, "|weekInvalid");
 	if (p->flags.leapSecValid) strcat(f, "|leapSecValid");
-	printf("timeBDS: iTOW %lums, tow %lu.%lds +/- %luns, weeks %d, leapSec %d, flags %s", p->iTOW, p->tow, p->fTow, p->tAcc, p->weeks, p->leapSec, f);
+	else  strcat(f, "|leapSecInvalid");
+	printf("timeBDS: iTOW %ums, tow %u.%09ds +/- %uns, weeks %d, leapSec %d, flags %s\n", p->iTOW, p->fTow < 0 ? p->tow - 1 : p->tow, p->fTow < 0 ? 1000000000 - p->fTow : p->fTow, p->tAcc, p->weeks, p->leapSec, f);
 	
+  free(payload);
 }
 
 void Gnss::navTimeGal() {
@@ -792,9 +977,13 @@ void Gnss::navTimeGal() {
 	char f[32];
 	memset(f, 0, 32);
 	if (p->flags.towValid) strcat(f, "towValid");
+	else  strcat(f, "towInvalid");
 	if (p->flags.weekValid) strcat(f, "|weekValid");
+	else  strcat(f, "|weekInvalid");
 	if (p->flags.leapSecValid) strcat(f, "|leapSecValid");
-	printf("timeGal: iTOW %lums, tow %lu.%lds +/- %luns, weeks %d, leapSec %d, flags %s\n", p->iTOW, p->tow, p->fTow, p->tAcc, p->weeks, p->leapSec, f);
+	else  strcat(f, "|leapSecInvalid");
+	printf("timeGal: iTOW %ums, tow %u.%09ds +/- %uns, weeks %d, leapSec %d, flags %s\n", p->iTOW, p->fTow < 0 ? p->tow - 1 : p->tow, p->fTow < 0 ? 1000000000 - p->fTow : p->fTow, p->tAcc, p->weeks, p->leapSec, f);
+  free(payload);
 }
 
 void Gnss::navTimeGlo() {
@@ -804,8 +993,11 @@ void Gnss::navTimeGlo() {
 	uint16_t day = p->day, doy = day % 365;
 	uint16_t year = 1992 + 4 * p->year + day / 365;
 	if (p->flags.todValid) strcat(f, "todValid");
+	else strcat(f, "todInvalid");
 	if (p->flags.dateValid) strcat(f, "|dateValid");
-	printf("timeGlo: iTOW %lums, tod %lu.%lds +/- %luns, dayOfYear %u, year %u, flags %s\n", p->iTOW, p->tod, p->fTod, p->tAcc, doy, year, f);
+	else strcat(f, "|dateInvalid");
+	printf("timeGlo: iTOW %ums, tod %u.%09ds +/- %uns, dayOfYear %u, year %u, flags %s\n", p->iTOW, p->fTod < 0 ? p->tod - 1 : p->tod, p->fTod < 0 ? 1000000000 - p->fTod : p->fTod, p->tAcc, doy, year, f);
+  free(payload);
 }
 
 void Gnss::navTimeGps() {
@@ -813,16 +1005,21 @@ void Gnss::navTimeGps() {
 	char f[32];
 	memset(f, 0, 32);
 	if (p->flags.towValid) strcat(f, "towValid");
+	else  strcat(f, "towInvalid");
 	if (p->flags.weekValid) strcat(f, "|weekValid");
+	else strcat(f, "|weekInvalid");
 	if (p->flags.leapSecValid) strcat(f, "|leapSecValid");
-	printf("timeGps: iTOW %lu.%lds +/- %luns, weeks %d, leapSec %d, flags %s\n", p->iTOW / 1000, p->fTow, p->tAcc, p->weeks, p->leapSec, f);
+	else strcat(f, "|leapSecInvalid");
+	printf("timeGps: iTOW %u.%09ds +/- %uns, weeks %d, leapSec %d, flags %s\n", p->fTow < 0 ? (p->iTOW / 1000) - 1 : p->iTOW / 1000, p->fTow < 0 ? 1000000000 - p->fTow : p->fTow, p->tAcc, p->weeks, p->leapSec, f);
+  free(payload);
 }
 
 void Gnss::navTimeLs() {
 	NavTimeLs * p = (NavTimeLs *)payload;
-	char g[17], cs[10];
+	char g[17], cs[10], t[128];
 	memset(g, 0, 17);
 	memset(cs, 0, 10);
+	memset(t, 0, sizeof(t));
 	switch (p->source) {
 		case DEFAULT_LSS: sprintf(g, "Default"); break;
 		case GPS_GLONASS_DIFF: sprintf(g, "GPS_GLONASS_DIFF"); break;
@@ -842,7 +1039,9 @@ void Gnss::navTimeLs() {
 		case GALILEO_CHANGE_LSS: sprintf(cs, "Galileo"); break;
 		case GLONAS_CHANGE_LSS: sprintf(cs, "GLONASS"); break;
 	}
-	printf("LeapSecond: iTOW %lu, currLS %u, src %s, changeSrc %s, lsChange %d, timeToLs %ld, week %u, day %u\n", p->iTOW, p->leapSec, g, cs, p->lsChange, p->timeToLs, p->gpsWeek, p->gpsDay);
+
+	printf("LeapSecond: iTOW %u, currLS %u, src %s, changeSrc %s, lsChange %d, timeToLs %s, week %u, day %u\n", p->iTOW, p->leapSec, g, cs, p->lsChange, humanTime(p->timeToLs, t), p->gpsWeek, p->gpsDay);
+  free(payload);
 }
 
 void Gnss::navTimeUtc() {
@@ -872,43 +1071,110 @@ void Gnss::navTimeUtc() {
 	printf("UTC: %s, source %s\n", tt, src);
     
   }
+  free(payload);
 }
 
 void Gnss::cfgGnss() {
-  GnssConf * gnssConf = (GnssConf *)payload;
+  gnssConf = *((GnssConf *)payload);
   GnssCfg * cfg = NULL;
   
-  printf("GnssConf: u-blox numTrkChHw %u, numTrkChUse %u\n", gnssConf->numTrkChHw, gnssConf->numTrkChUse);
-  char gnss_id[8], on_off[9];
-  memset(gnss_id, 0, 8);
-  memset(on_off, 0, 9);
-  for (uint8_t i = 0; i < gnssConf->numConfigBlocks; i++) {
+  printf("GnssConf: u-blox numTrkChHw %u, numTrkChUse %u\n", gnssConf.numTrkChHw, gnssConf.numTrkChUse);
+  char gnss_id[8], on_off[9], signal[16];
+  for (uint8_t i = 0; i < gnssConf.numConfigBlocks; i++) {
+	memset(gnss_id, 0, sizeof(gnss_id));
+	memset(on_off, 0, sizeof(on_off));
+	memset(signal, 0, sizeof(signal));
 	cfg = (GnssCfg *)(payload + sizeof(GnssConf) + sizeof(GnssCfg) * i);
     switch (cfg->gnssId) {
-      case GPS_ID: sprintf(gnss_id, "GPS"); break;
-      case SBAS_ID: sprintf(gnss_id, "SBAS"); break;
-      case Galileo_ID: sprintf(gnss_id, "Galileo"); break;
-      case BeiDou_ID: sprintf(gnss_id, "BeiDou"); break;
-      case IMES_ID: sprintf(gnss_id, "IMES"); break;
-      case QZSS_ID: sprintf(gnss_id, "QZSS"); break;
-      case GLONASS_ID: sprintf(gnss_id, "GLONASS"); break;
+      case GPS_ID: 
+		  sprintf(gnss_id, "GPS");
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "GPS L1C/A");  break;
+		  case 0x10: sprintf(signal, "GPS L2C"); break;
+		  }
+		  break;
+      case SBAS_ID: 
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "SBAS L1C/A");  break;
+		  }
+		  sprintf(gnss_id, "SBAS");
+		  break;
+      case Galileo_ID: 
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "Galileo E1");  break;
+		  case 0x20: sprintf(signal, "Galileo E5b"); break;
+		  }
+		  sprintf(gnss_id, "Galileo");
+		  break;
+      case BeiDou_ID: 
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "BeiDou B1I");  break;
+		  case 0x10: sprintf(signal, "BeiDou B2I"); break;
+		  }
+		  sprintf(gnss_id, "BeiDou");
+		  break;
+      case IMES_ID: 
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "IMES L1");  break;
+		  }
+		  sprintf(gnss_id, "IMES");
+		  break;
+      case QZSS_ID: 
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "QZSS L1C/A");  break;
+		  case 4: sprintf(signal, "QZSS L1S"); break;
+		  case 0x10: sprintf(signal, "QZSS L2C"); break;
+		  }
+		  sprintf(gnss_id, "QZSS");
+		  break;
+      case GLONASS_ID: 
+		  switch (cfg->flags.sigCfgMask) {
+		  case 1: sprintf(signal, "GLONASS L1");  break;
+		  case 0x10: sprintf(signal, "GLONASS L2"); break;
+		  }
+		  sprintf(gnss_id, "GLONASS");
+		  break;
     }
     if (cfg->flags.enabled) sprintf(on_off, "enabled"); 
 	else sprintf(on_off, "disabled");
-	printf("GNSS id %s, minCh %u, maxCh %u: %s\n", gnss_id, cfg->minTrkCh, cfg->maxTrkCh, on_off);
+	if (i < maxNumberOfGnss) {
+		configuredGnss[i].gnssId = cfg->gnssId;
+		configuredGnss[i].minTrkCh = cfg->minTrkCh;
+		configuredGnss[i].maxTrkCh = cfg->maxTrkCh;
+		configuredGnss[i].flags = cfg->flags;
+	}
+	printf("GNSS id %s, minCh %u, maxCh %u: %s, sigCfgMask %s\n", gnss_id, cfg->minTrkCh, cfg->maxTrkCh, on_off, signal);
   }
+  free(payload);
 }
 
 void Gnss::cfgInf() {
-  InfoMsgMask * mask = NULL;
+  InfoMsgMask mask[6];
   char pr[5], po[8];
   memset(pr, 0, 5);
   memset(po, 0, 8);
   for (uint8_t i = 0; i < 6; i++) {
-	  mask = (InfoMsgMask *)&(payload[i + 4]);
+	  mask[i] = *((InfoMsgMask *)&(payload[i + 4]));
       switch((uint8_t)payload[0]) {
-		case UBX: sprintf(pr, "UBX"); break;
-		case NMEA: sprintf(pr, "NMEA"); break;
+	  case UBX: 
+		  sprintf(pr, "UBX"); 
+		  gnssCfgInfo[0].protocolId = UBX;
+		  gnssCfgInfo[0].mask[i].debug = mask[i].debug;
+		  gnssCfgInfo[0].mask[i].error = mask[i].error;
+		  gnssCfgInfo[0].mask[i].notice = mask[i].notice;
+		  gnssCfgInfo[0].mask[i].test = mask[i].test;
+		  gnssCfgInfo[0].mask[i].warning = mask[i].warning;
+		  gnssCfgInfo[0].mask[i].reserved = 0;
+		  break;
+		case NMEA: sprintf(pr, "NMEA"); 
+			gnssCfgInfo[1].protocolId = UBX;
+			gnssCfgInfo[1].mask[i].debug = mask[i].debug;
+			gnssCfgInfo[1].mask[i].error = mask[i].error;
+			gnssCfgInfo[1].mask[i].notice = mask[i].notice;
+			gnssCfgInfo[1].mask[i].test = mask[i].test;
+			gnssCfgInfo[1].mask[i].warning = mask[i].warning;
+			gnssCfgInfo[1].mask[i].reserved = 0;
+			break;
 	  }
 	  switch(i) {
 		case DDC: sprintf(po, "DDC"); break;
@@ -919,19 +1185,23 @@ void Gnss::cfgInf() {
 		case RES: sprintf(po, "RES"); break;
 		default: sprintf(po, "UNKNOWN"); break;
 	  }
-	  printf("cfgInfoMask: %s %s INF-MSG mask: err %u, warn %u, info %u, test %u, debug %u\n", po, pr, mask->error, mask->warning, mask->notice, mask->test, mask->debug);
+	  printf("cfgInfoMask: %s %s INF-MSG mask: err %u, warn %u, info %u, test %u, debug %u\n", po, pr, mask[i].error, mask[i].warning, mask[i].notice, mask[i].test, mask[i].debug);
   }
+  free(payload);
 }
 
 void Gnss::cfgLogFilter() {
-  CfgLogFilter * filter = (CfgLogFilter *)payload;
+  gnssLogFilter = *((CfgLogFilter *)payload);
   char flags[70];
   memset(flags, 0, 70);
-  if (filter->flags.recordingEnabled) strcat(flags, "recEnabled");   
-  if (filter->flags.psmOncePerWakeUpEnabled) strcat(flags, "|psmOncePerWakeUp Enabled");   
-  if (filter->flags.applyAllFilterSettings) strcat(flags, "|applyAllFilterSettings"); 
-  printf("cfgLogFilter: minInterval %us, timeThreshold %us, speedThreshold %um/s, positionThreshold %um, flags %s\n", filter->minInterval, filter->timeThreshold, filter->speedThreshold, filter->positionThreshold, flags);
-    
+  if (gnssLogFilter.flags.recordingEnabled) strcat(flags, "recEnabled");  
+  else  strcat(flags, "recDisabled");
+  if (gnssLogFilter.flags.psmOncePerWakeUpEnabled) strcat(flags, "|psmOncePerWakeUp Enabled");
+  else strcat(flags, "|psmOncePerWakeUp Disabled");
+  if (gnssLogFilter.flags.applyAllFilterSettings) strcat(flags, "|applyAllFilterSettings Yes");
+  else strcat(flags, "|applyAllFilterSettings No");
+  printf("cfgLogFilter: minInterval %us, timeThreshold %us, speedThreshold %um/s, positionThreshold %um, flags %s\n", gnssLogFilter.minInterval, gnssLogFilter.timeThreshold, gnssLogFilter.speedThreshold, gnssLogFilter.positionThreshold, flags);
+  free(payload);
 }
 
 void Gnss::cfgMsg() {
@@ -940,11 +1210,11 @@ void Gnss::cfgMsg() {
   memset(cl, 0, 8);
   memset(po, 0, 5);
   if (payloadLength == 8) {
-	CfgMsg * msg = (CfgMsg *)payload;
-	switch(msg->msgClass) {
+	gnssCfgMsgs = *((CfgMsgs *)payload);
+	switch(gnssCfgMsgs.msgClass) {
 	case UBX_NAV: 
 		sprintf(cl, "UBX-NAV"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsgs.msgId) {
 			case NAV_CLOCK: sprintf(ids, "CLOCK"); break;
 			case NAV_DGPS: sprintf(ids, "DGPS"); break;
 			case NAV_DOP: sprintf(ids, "DOP"); break;
@@ -952,31 +1222,44 @@ void Gnss::cfgMsg() {
 			case NAV_GEOFENCE: sprintf(ids, "GEOFENCE"); break;
 			case NAV_ODO: sprintf(ids, "ODO"); break;
 			case NAV_ORB: sprintf(ids, "ORB"); break;
+			case NAV_POSECEF: sprintf(ids, "POSECEF"); break;
 			case NAV_POSLLH: sprintf(ids, "POSLLH"); break;
 			case NAV_RESETODO: sprintf(ids, "RESETODO"); break;
 			case NAV_SAT: sprintf(ids, "SAT"); break;
 			case NAV_SBAS: sprintf(ids, "SBAS"); break;
 			case NAV_SLAS: sprintf(ids, "SLAS"); break;
+			case NAV_STATUS: sprintf(ids, "STATUS"); break;
+			case NAV_SVINFO: sprintf(ids, "SVINFO"); break;
 			case NAV_TIMEBDS: sprintf(ids, "TIMEBDS"); break;
 			case NAV_TIMEGAL: sprintf(ids, "TIMEGAL"); break;
 			case NAV_TIMEGLO: sprintf(ids, "TIMEGLO"); break;
 			case NAV_TIMEGPS: sprintf(ids, "TIMEGPS"); break;
 			case NAV_TIMELS: sprintf(ids, "TIMELS"); break;
 			case NAV_TIMEUTC: sprintf(ids, "TIMEUTC"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			case NAV_VELECEF: sprintf(ids, "VELECEF"); break;
+			case NAV_VELNED: sprintf(ids, "VELNED"); break;
+			default: sprintf(ids, "%X", gnssCfgMsgs.msgId);
 		}
 		break;
 	case UBX_TIM: 
 		sprintf(cl, "UBX-TIM"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsgs.msgId) {
 			case TIM_TM2: sprintf(ids, "TM2"); break;
 			case TIM_TP: sprintf(ids, "TP"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			default: sprintf(ids, "%X", gnssCfgMsgs.msgId);
 		}
 		break;
 	case UBX_NMEA: 
 		sprintf(cl, "NMEA"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsgs.msgId) {
+			case NMEA_DTM: sprintf(ids, "DTM"); break;
+			case NMEA_GBQ: sprintf(ids, "GBQ"); break;
+			case NMEA_GBS: sprintf(ids, "GBS"); break;
+			case NMEA_GLQ: sprintf(ids, "GLQ"); break;
+			case NMEA_GNQ: sprintf(ids, "GNQ"); break;
+			case NMEA_GPQ: sprintf(ids, "GPQ"); break;
+			case NMEA_GRS: sprintf(ids, "GRS"); break;
+			case NMEA_TXT: sprintf(ids, "TXT"); break;
 			case NMEA_RMC: sprintf(ids, "RMC"); break;
 			case NMEA_VTG: sprintf(ids, "VTG"); break;
 			case NMEA_GGA: sprintf(ids, "GGA"); break;
@@ -987,20 +1270,20 @@ void Gnss::cfgMsg() {
 			case NMEA_VLW: sprintf(ids, "VLW"); break;
 			case NMEA_GNS: sprintf(ids, "GNS"); break;
 			case NMEA_ZDA: sprintf(ids, "ZDA"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			default: sprintf(ids, "%X", gnssCfgMsgs.msgId);
 		}
 		break;
 	case UBX_PUBX: 
 		sprintf(cl, "PUBX"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsgs.msgId) {
 			case PUBX_CONFIG: sprintf(ids, "CONFIG"); break;
 			case PUBX_POSITION: sprintf(ids, "POSITION"); break;
 			case PUBX_SVSTATUS: sprintf(ids, "SVSTATUS"); break;
 			case PUBX_TIME: sprintf(ids, "TIME"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			default: sprintf(ids, "%X", gnssCfgMsgs.msgId);
 		}
 		break;
-		default: sprintf(cl, "%X", msg->msgClass);
+		default: sprintf(cl, "%X", gnssCfgMsg.msgClass);
 	}
 	for (uint8_t portId = 0; portId < 5; portId++) {
 		switch(portId) {
@@ -1011,15 +1294,14 @@ void Gnss::cfgMsg() {
 		case SPI: sprintf(po, "SPI"); break;
 		case RES: sprintf(po, "RES"); break;
 		}
-		printf("%s cfgMsg %s-%s: rate per navSol %u\n", po, cl, ids, msg->rate[portId]);
-		
+		printf("%s cfgMsg %s-%s: rate per navSol %u\n", po, cl, ids, gnssCfgMsgs.rate[portId]);		
 	}
   } else {
-	CfgMsgCOM1 * msg = (CfgMsgCOM1 *)payload;
-	switch(msg->msgClass) {
+	gnssCfgMsg = *((CfgMsg *)payload);
+	switch(gnssCfgMsg.msgClass) {
 	case UBX_NAV: 
 		sprintf(cl, "UBX-NAV"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsg.msgId) {
 			case NAV_CLOCK: sprintf(ids, "CLOCK"); break;
 			case NAV_DGPS: sprintf(ids, "DGPS"); break;
 			case NAV_DOP: sprintf(ids, "DOP"); break;
@@ -1027,31 +1309,44 @@ void Gnss::cfgMsg() {
 			case NAV_GEOFENCE: sprintf(ids, "GEOFENCE"); break;
 			case NAV_ODO: sprintf(ids, "ODO"); break;
 			case NAV_ORB: sprintf(ids, "ORB"); break;
+			case NAV_POSECEF: sprintf(ids, "POSECEF"); break;
 			case NAV_POSLLH: sprintf(ids, "POSLLH"); break;
 			case NAV_RESETODO: sprintf(ids, "RESETODO"); break;
 			case NAV_SAT: sprintf(ids, "SAT"); break;
 			case NAV_SBAS: sprintf(ids, "SBAS"); break;
 			case NAV_SLAS: sprintf(ids, "SLAS"); break;
+			case NAV_STATUS: sprintf(ids, "STATUS"); break;
+			case NAV_SVINFO: sprintf(ids, "SVINFO"); break;
 			case NAV_TIMEBDS: sprintf(ids, "TIMEBDS"); break;
 			case NAV_TIMEGAL: sprintf(ids, "TIMEGAL"); break;
 			case NAV_TIMEGLO: sprintf(ids, "TIMEGLO"); break;
 			case NAV_TIMEGPS: sprintf(ids, "TIMEGPS"); break;
 			case NAV_TIMELS: sprintf(ids, "TIMELS"); break;
 			case NAV_TIMEUTC: sprintf(ids, "TIMEUTC"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			case NAV_VELECEF: sprintf(ids, "VELECEF"); break;
+			case NAV_VELNED: sprintf(ids, "VELNED"); break;
+			default: sprintf(ids, "%X", gnssCfgMsg.msgId);
 		}
 		break;
 	case UBX_TIM: 
 		sprintf(cl, "UBX-TIM"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsg.msgId) {
 			case TIM_TM2: sprintf(ids, "TM2"); break;
 			case TIM_TP: sprintf(ids, "TP"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			default: sprintf(ids, "%X", gnssCfgMsg.msgId);
 		}
 		break;
 	case UBX_NMEA: 
 		sprintf(cl, "NMEA"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsg.msgId) {
+			case NMEA_DTM: sprintf(ids, "DTM"); break;
+			case NMEA_GBQ: sprintf(ids, "GBQ"); break;
+			case NMEA_GBS: sprintf(ids, "GBS"); break;
+			case NMEA_GLQ: sprintf(ids, "GLQ"); break;
+			case NMEA_GNQ: sprintf(ids, "GNQ"); break;
+			case NMEA_GPQ: sprintf(ids, "GPQ"); break;
+			case NMEA_GRS: sprintf(ids, "GRS"); break;
+			case NMEA_TXT: sprintf(ids, "TXT"); break;
 			case NMEA_RMC: sprintf(ids, "RMC"); break;
 			case NMEA_VTG: sprintf(ids, "VTG"); break;
 			case NMEA_GGA: sprintf(ids, "GGA"); break;
@@ -1062,31 +1357,31 @@ void Gnss::cfgMsg() {
 			case NMEA_VLW: sprintf(ids, "VLW"); break;
 			case NMEA_GNS: sprintf(ids, "GNS"); break;
 			case NMEA_ZDA: sprintf(ids, "ZDA"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			default: sprintf(ids, "%X", gnssCfgMsg.msgId);
 		}
 		break;
 	case UBX_PUBX: 
 		sprintf(cl, "PUBX"); 
-		switch(msg->msgId) {
+		switch(gnssCfgMsg.msgId) {
 			case PUBX_CONFIG: sprintf(ids, "CONFIG"); break;
 			case PUBX_POSITION: sprintf(ids, "POSITION"); break;
 			case PUBX_SVSTATUS: sprintf(ids, "SVSTATUS"); break;
 			case PUBX_TIME: sprintf(ids, "TIME"); break;
-			default: sprintf(ids, "%X", msg->msgId);
+			default: sprintf(ids, "%X", gnssCfgMsg.msgId);
 		}
 		break;
-		default: sprintf(cl, "%X", msg->msgClass);
+		default: sprintf(cl, "%X", gnssCfgMsg.msgClass);
 	}
-    printf("cfgMsg %s-%s: rate per navSol %u\n", cl, ids, msg->rate);
-	
+    printf("cfgMsg %s-%s: rate per navSol %u\n", cl, ids, gnssCfgMsg.rate);	
   }
+  free(payload);
 }
 
 void Gnss::cfgNav() {
-  CfgNav * cfg = (CfgNav *)payload;
+  gnssNav = *((CfgNav *)payload);
   char dyn[12];
   memset(dyn, 0, 12);
-  switch (cfg->dynModel) {
+  switch (gnssNav.dynModel) {
         case PORTABLE: sprintf(dyn, "PORTABLE"); break;
         case STATIONARY: sprintf(dyn, "STATIONARY"); break;
         case PEDESTRIAN: sprintf(dyn, "PEDESTRIAN"); break;
@@ -1101,7 +1396,7 @@ void Gnss::cfgNav() {
   
   char utc[10];
   memset(utc, 0, 10);
-  switch (cfg->utcStandard) {
+  switch (gnssNav.utcStandard) {
     case AUTOMATIC: sprintf(utc, "AUTOMATIC"); break;
     case GPS: sprintf(utc, "GPS"); break;
     case GLONASS: sprintf(utc, "GLONASS"); break;
@@ -1111,18 +1406,19 @@ void Gnss::cfgNav() {
 
   char fm[6];
   memset(fm, 0, 6);
-  switch(cfg->fixMode) {
+  switch(gnssNav.fixMode) {
   	  case TWO_D_ONLY: sprintf(fm, "2D"); break;
 	  case THREE_D_ONLY: sprintf(fm, "3D"); break;
 	  case AUTO: sprintf(fm, "AUTO"); break;
 	  case FIX_MODE_ERROR: sprintf(fm, "ERROR"); break;
   }
-  printf("cfgNav: dynModel %s, utcStandard %s, fixMode %s, fixedAlt %ldm, variance %lum2, pDOP %u, tDOP %u, pAcc %um, tAcc %ums?\n", dyn, utc, fm, cfg->fixedAlt / 100, cfg->fixedAltVar / 10000, cfg->pDOP / 10, cfg->tDOP / 10, cfg->pAcc);
-  printf("cfgNav: cnoThreshold %udBHz, NumSVs %u, staticHoldThreshold %ucm/s, MaxDist %um, minElev %udeg above hor, dgnssTimeout %us\n", cfg->cnoThreshold, cfg->cnoThresholdNumSVs, cfg->staticHoldThreshold, cfg->staticHoldMaxDistance, cfg->minElev, cfg->dgnssTimeout); 
+  printf("cfgNav: dynModel %s, utcStandard %s, fixMode %s, fixedAlt %dm, variance %um2, pDOP %u, tDOP %u, pAccMask %u, tAccMask %u\n", dyn, utc, fm, gnssNav.fixedAlt / 100, gnssNav.fixedAltVar / 10000, gnssNav.pDOP / 10, gnssNav.tDOP / 10, gnssNav.pAcc, gnssNav.tAcc);
+  printf("cfgNav: cnoThreshold %udBHz, NumSVs %u, staticHoldThreshold %ucm/s, MaxDist %um, minElev %udeg above hor, dgnssTimeout %us\n", gnssNav.cnoThreshold, gnssNav.cnoThresholdNumSVs, gnssNav.staticHoldThreshold, gnssNav.staticHoldMaxDistance, gnssNav.minElev, gnssNav.dgnssTimeout); 
+  free(payload);
 }
 
 void Gnss::cfgOdo() {
-  ODOCfg * cfg = (ODOCfg *)payload; //getCfgOdo();
+  gnssCfgOdo = *((ODOCfg *)payload);
   char flags[255], profile[9], enabled[8], disabled[9];
   memset(flags, 0, 255);
   memset(profile, 0, 9);
@@ -1132,47 +1428,49 @@ void Gnss::cfgOdo() {
   sprintf(enabled, "enabled");
   sprintf(disabled, "disabled");
   sprintf(flags, "ODO ");
-  if (cfg->flags.ODOenabled) strcat(flags, enabled); else strcat(flags, disabled);
+  if (gnssCfgOdo.flags.ODOenabled) strcat(flags, enabled); else strcat(flags, disabled);
   strcat(flags, "|low speed COG filter ");
-  if (cfg->flags.COGenabled) strcat(flags, enabled); else strcat(flags, disabled);
+  if (gnssCfgOdo.flags.COGenabled) strcat(flags, enabled); else strcat(flags, disabled);
   strcat(flags, "|low speed (< 5m/s) filter ");
-  if (cfg->flags.outputLPvelocity) strcat(flags, enabled); else strcat(flags, disabled);
+  if (gnssCfgOdo.flags.outputLPvelocity) strcat(flags, enabled); else strcat(flags, disabled);
   strcat(flags, "|2D headingOfMotion ");
-  if (cfg->flags.outputLPcog) strcat(flags, enabled); else strcat(flags, disabled);
+  if (gnssCfgOdo.flags.outputLPcog) strcat(flags, enabled); else strcat(flags, disabled);
 
-  switch (cfg->odoProfile) {
+  switch (gnssCfgOdo.odoProfile) {
     case RUNNING: sprintf(profile, "RUNNING"); break;
     case CYCLING: sprintf(profile, "CYCLING"); break;
     case SWIMMING: sprintf(profile, "SWIMMING"); break;
     case DRIVING: sprintf(profile, "DRIVING"); break;
     case CUSTOM: sprintf(profile, "CUSTOM"); break;
   }
-  printf("ODOcfg - flags: %s, profile %s, COGlowSpeedFilterThresh %um/s, COGmaxAcceptablePosAccuracy %um, velLPgain %u cogLPgain %u\n", flags, profile, cfg->cogMaxSpeed, cfg->cogMaxPosAccuracy, cfg->velLPgain, cfg->cogLPgain);
+  printf("ODOcfg - flags: %s, profile %s, COGlowSpeedFilterThresh %um/s, COGmaxAcceptablePosAccuracy %um, velLPgain %u cogLPgain %u\n", flags, profile, gnssCfgOdo.cogMaxSpeed / 10, gnssCfgOdo.cogMaxPosAccuracy, gnssCfgOdo.velLPgain, gnssCfgOdo.cogLPgain);
+  free(payload);
 }
 
 void Gnss::cfgPm() {
-	CfgPm * p = (CfgPm *)payload;
+	gnssCfgPm = *((CfgPm *)payload);
 	char flags[128];
 	memset(flags, 0, 128);
-	if (p->flags.extintSel) strcat(flags, "EXTINT1"); else strcat(flags, "EXTINT0");
-	if (p->flags.extintWake) strcat(flags, "|Wake");
-	if (p->flags.extintBackup) strcat(flags, "|Backup");
-	if (p->flags.extintInactivity) strcat(flags, "|Inactivity");
-	if (p->flags.limitPeakCurr) strcat(flags, "|limitPeakCurr");
-	if (p->flags.waitTimeFix) strcat(flags, "|waitTimeFix");
-	if (p->flags.updateRTC) strcat(flags, "|updateRTC");
-	if (p->flags.updateEph) strcat(flags, "|updateEph");
-	if (p->flags.doNotEnterOff) strcat(flags, "|doNotEnterOff");
-	if (p->flags.mode) strcat(flags, "|PSMCT"); else strcat(flags, "|PSMOO");
-	printf("CfgPm: maxStartupStateDuration %us, updatePeriod %lums, searchPeriod %lums, gridOffset %lums, onTime %us, minAcqTime %us, extintInactivity %lums, flags %s\n", p->maxStartupStateDuration, p->updatePeriod, p->searchPeriod, p->gridOffset, p->onTime, p->minAcqTime, p->extintInactivity, flags);
+	if (gnssCfgPm.flags.extintSel) strcat(flags, "EXTINT1"); else strcat(flags, "EXTINT0");
+	if (gnssCfgPm.flags.extintWake) strcat(flags, "|Wake");
+	if (gnssCfgPm.flags.extintBackup) strcat(flags, "|Backup");
+	if (gnssCfgPm.flags.extintInactivity) strcat(flags, "|Inactivity");
+	if (gnssCfgPm.flags.limitPeakCurr) strcat(flags, "|limitPeakCurr");
+	if (gnssCfgPm.flags.waitTimeFix) strcat(flags, "|waitTimeFix");
+	if (gnssCfgPm.flags.updateRTC) strcat(flags, "|updateRTC");
+	if (gnssCfgPm.flags.updateEph) strcat(flags, "|updateEph");
+	if (gnssCfgPm.flags.doNotEnterOff) strcat(flags, "|doNotEnterOff");
+	if (gnssCfgPm.flags.mode) strcat(flags, "|PSMCT"); else strcat(flags, "|PSMOO");
+	printf("CfgPm: maxStartupStateDuration %us, updatePeriod %ums, searchPeriod %ums, gridOffset %ums, onTime %us, minAcqTime %us, extintInactivity %ums, flags %s\n", gnssCfgPm.maxStartupStateDuration, gnssCfgPm.updatePeriod, gnssCfgPm.searchPeriod, gnssCfgPm.gridOffset, gnssCfgPm.onTime, gnssCfgPm.minAcqTime, gnssCfgPm.extintInactivity, flags);
+  free(payload);
 }
 
 void Gnss::cfgPms() {
-  PowerMode * mode = (PowerMode *)payload;
+  powerMode = *((PowerMode *)payload);
   char pwr[9];
   memset(pwr, 0, 9);
 
-  switch (mode->powerMode)
+  switch (powerMode.powerMode)
   {
     case FULL_POWER_MODE: sprintf(pwr, "FULL"); break;
     case BALANCED_POWER_MODE: sprintf(pwr, "BALANCED"); break;
@@ -1182,11 +1480,12 @@ void Gnss::cfgPms() {
     case AGGRESSIVE_4HZ_POWER_MODE: sprintf(pwr, "AGGR_4HZ"); break;
     case INVALID_POWER_MODE: sprintf(pwr, "INVALID"); break;
   }
-  printf("powerMode %s, period %us, onTime %us\n", pwr, mode->period, mode->onTime); 
+  printf("powerMode %s, period %us, onTime %us\n", pwr, powerMode.period, powerMode.onTime); 
+  free(payload);
 }
 
 void Gnss::cfgPrt() {
-  CfgPrt * cfg = (CfgPrt *)payload;
+  gnssPort = *((CfgPrt *)payload);
   char id[5], mode[64], clen[2], par[5], sbits[4], inProto[14], outProto[9];
   memset(id, 0, 5);
   memset(mode, 0, 64);
@@ -1196,7 +1495,7 @@ void Gnss::cfgPrt() {
   memset(inProto, 0, 14);
   memset(outProto, 0, 9);
 
-  switch (cfg->portId) {
+  switch (gnssPort.portId) {
 	case DDC: sprintf(id, "DDC"); break;
 	case COM1: sprintf(id, "COM1"); break;
 	case COM2: sprintf(id, "COM2"); break;
@@ -1204,32 +1503,33 @@ void Gnss::cfgPrt() {
 	case SPI: sprintf(id, "SPI"); break;
 	case RES: sprintf(id, "RES"); break;
   }
-  switch (cfg->mode.charLen) {
+  switch (gnssPort.mode.charLen) {
      case FIVE_BIT: sprintf(clen, "5"); break;
      case SIX_BIT: sprintf(clen, "6"); break;
      case SEVEN_BIT: sprintf(clen, "7"); break;
      case EIGHT_BIT: sprintf(clen, "8"); break;
   }
-  switch (cfg->mode.parity) {
+  switch (gnssPort.mode.parity) {
     case PARITY_EVEN: sprintf(par, "even"); break;
     case PARITY_ODD: sprintf(par, "odd"); break;
     case NO_PARITY: sprintf(par, "no"); break;
     case NO_PARITY2: sprintf(par, "no"); break;
   }
-  switch (cfg->mode.nStopBits) {
+  switch (gnssPort.mode.nStopBits) {
     case ONE_STOP_BIT: sprintf(sbits, "1"); break;
     case ONE_AND_HALF_STOP_BIT: sprintf(sbits, "1.5"); break;
     case TWO_STOP_BIT: sprintf(sbits, "2"); break;
     case HALF_STOP_BIT: sprintf(sbits, "0.5"); break;
   }
-  if (cfg->inProtoMask.inUbx) sprintf(inProto, "Ubx");
-  if (cfg->inProtoMask.inNmea) strcat(inProto, "|Nmea");
-  if (cfg->inProtoMask.inRtcm) strcat(inProto, "|Rtcm");
-  if (cfg->outProtoMask.outUbx) sprintf(outProto, "Ubx");
-  if (cfg->outProtoMask.outNmea) strcat(outProto, "|Nmea");
+  if (gnssPort.inProtoMask.inUbx) sprintf(inProto, "Ubx");
+  if (gnssPort.inProtoMask.inNmea) strcat(inProto, "|Nmea");
+  if (gnssPort.inProtoMask.inRtcm) strcat(inProto, "|Rtcm");
+  if (gnssPort.outProtoMask.outUbx) sprintf(outProto, "Ubx");
+  if (gnssPort.outProtoMask.outNmea) strcat(outProto, "|Nmea");
   
   sprintf(mode, "%s bit|%s parity|%s stop bit", clen, par, sbits);
-  printf("cfgPrt: %s, rate %lu baud, mode %s, inProto %s, outProto %s\n", id, (uint32_t)(cfg->baudRate), mode, inProto, outProto); 
+  printf("cfgPrt: %s, rate %u baud, mode %s, inProto %s, outProto %s\n", id, (uint32_t)(gnssPort.baudRate), mode, inProto, outProto); 
+  free(payload);
 }
 
 //UBX-CFG-PWR is deprecated in protocols > 17
@@ -1237,10 +1537,10 @@ void Gnss::cfgPwr() {
 }
 
 void Gnss::cfgRate() {
-  NavRate * rate = (NavRate *)payload;
+  gnssNavRate = *((NavRate *)payload);
   char timeRef[8];
   memset(timeRef, 0, 8);
-  switch (rate->timeRef)
+  switch (gnssNavRate.timeRef)
   {
     case UTC_TIME: sprintf(timeRef, "UTC"); break;
     case GPS_TIME: sprintf(timeRef, "GPS"); break;
@@ -1248,31 +1548,34 @@ void Gnss::cfgRate() {
     case BEIDOU_TIME: sprintf(timeRef, "BEIDOU"); break;
     case GALILEO_TIME: sprintf(timeRef, "GALILEO"); break;
   }
-  printf("cfgRate: navRate %ums, measurementsPerNavSol %u, timeRef %s\n", rate->rate, rate->navSolRate, timeRef);
+  printf("cfgRate: navRate %ums, measurementsPerNavSol %u, timeRef %s\n", gnssNavRate.rate, gnssNavRate.navSolRate, timeRef);
+  free(payload);
 }
 
 void Gnss::cfgRxm() {
-	CfgRxm * p = (CfgRxm *)(payload);
+	gnssCfgRxm = *((CfgRxm *)payload);
 	printf("cfgRxm mode: ");
-	switch(p->lpMode) {
+	switch(gnssCfgRxm.lpMode) {
 		case CONTINUOUS_POWER: printf("CONTINUOUS_POWER\n"); break;
 		case POWER_SAVE_MODE: printf("POWER_SAVE_MODE\n"); break;
 		case CONTINUOUS_MODE: printf("CONTINUOUS_MODE\n"); break;
 	}	
+  free(payload);
 }
 
 void Gnss::cfgSbas() {
-	CfgSbas * p = (CfgSbas *)payload;
+	gnssCfgSbas = *((CfgSbas *)payload);
 	char str[64];
 	memset(str, 0, 64);
 	printf("cfgSbas mode ");
-	if (p->mode.enabled) strcat(str, "enabled"); else strcat(str, "disabled");
-	if (p->mode.testMode) strcat(str, "|testMode");
+	if (gnssCfgSbas.mode.enabled) strcat(str, "enabled"); else strcat(str, "disabled");
+	if (gnssCfgSbas.mode.testMode) strcat(str, "|testMode");
 	strcat(str, ", usage ");
-	if (p->usage.range) strcat(str, "range");
-	if (p->usage.diffCorr) strcat(str, "|diffCorr");
-	if (p->usage.integrity) strcat(str, "|integrity");
-	printf("%s, maxSbas %u, scanMode1 %lu, scanMode2 %u\n", str, p->maxSbas, p->scanMode1, p->scanMode2);
+	if (gnssCfgSbas.usage.range) strcat(str, "range");
+	if (gnssCfgSbas.usage.diffCorr) strcat(str, "|diffCorr");
+	if (gnssCfgSbas.usage.integrity) strcat(str, "|integrity");
+	printf("%s, maxSbas %u, scanMode1 %u, scanMode2 %u\n", str, gnssCfgSbas.maxSbas, gnssCfgSbas.scanMode1, gnssCfgSbas.scanMode2);
+  free(payload);
 }
 
 //UBX-CFG-SLAS Not supported in protocols < 19.2
@@ -1280,14 +1583,14 @@ void Gnss::cfgSlas() {
 }
 
 void Gnss::cfgTp() {
-  TimePulse * tp = (TimePulse *)payload;
+  gnssTp = *((TimePulse *)payload);
   char flags[255], fp[3], lc[6];
   memset(flags, 0, 255);
   memset(fp, 0, 3);
   memset(lc, 0, 6);
   sprintf(fp, "us");
   sprintf(lc, "2^-32");
-  TimePulseFlags f = tp->flags;
+  TimePulseFlags f = gnssTp.flags;
   if (f.active) strcat(flags, "active");
   if (f.lockGnssFreq) strcat(flags, "|lockGnssFreq");
   if (f.lockedOtherSet) strcat(flags, "|lockedOtherSet");
@@ -1303,28 +1606,32 @@ void Gnss::cfgTp() {
     case BEIDOU_TIME: strcat(flags, "|BEIDOU_TIME"); break;
     case GALILEO_TIME: strcat(flags, "|GALILEO_TIME"); break;
   }
-  printf("timePulse id %u, cableDelay %luns, rfDelay %luns, pulsePeriod %lu%s, pulsePeriodLocked %lu%s, pulseLen %lu%s, pulseLenLocked %lu%s, delay %luns, flags %s\n", tp->pulseId, tp->antCableDelay, tp->rfGroupDelay, tp->pulsePeriod, fp, tp->pulsePeriodLocked, fp, tp->pulseLen, lc, tp->pulseLenLocked, lc, tp->userConfigDelay, flags);
+  printf("timePulse id %u, cableDelay %uns, rfDelay %uns, pulsePeriod %u%s, pulsePeriodLocked %u%s, pulseLen %u%s, pulseLenLocked %u%s, delay %uns, flags %s\n", gnssTp.pulseId, gnssTp.antCableDelay, gnssTp.rfGroupDelay, gnssTp.pulsePeriod, fp, gnssTp.pulsePeriodLocked, fp, gnssTp.pulseLen, lc, gnssTp.pulseLenLocked, lc, gnssTp.userConfigDelay, flags);
+  free(payload);
 }
 
 void Gnss::cfgGeoFence() {
-	GeoFences * p = (GeoFences *)payload;
+	gnssGeoFences = *((GeoFences *)payload);
 	
-	GeoFence * f = NULL;
 	Latitude lat;
     Longitude lon;
 
-	printf("cfgGeofences confLvl %u, pioEnabled %u, pinPolarity %u, pin %u\n", p->confidenceLevel, p->pioEnabled, p->pinPolarity, p->pin);
+	printf("cfgGeofences confLvl %u, pioEnabled %u, pinPolarity %u, pin %u\n", gnssGeoFences.confidenceLevel, gnssGeoFences.pioEnabled, gnssGeoFences.pinPolarity, gnssGeoFences.pin);
 	
-	for (uint8_t i = 0; i < p->numFences; i++) {
-		f = (GeoFence *)(payload + sizeof(GeoFences) + i * sizeof(GeoFence));
-	    longLatToDMS(&lat, f->lat);
-		longLonToDMS(&lon, f->lon);
-		printf("%u: %s %s radius %lum\n", i, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), f->radius / 100);
+	numberOfGeoFences = gnssGeoFences.numFences;
+	for (uint8_t i = 0; i < numberOfGeoFences; i++) {
+		if (numberOfGeoFences < maxNumberOfGeoFences) {
+			gnssGeoFence[i] = *((GeoFence *)(payload + sizeof(GeoFences) + i * sizeof(GeoFence)));
+			longLatToDMS(&lat, gnssGeoFence[i].lat);
+			longLonToDMS(&lon, gnssGeoFence[i].lon);
+			printf("%u: %s %s radius %um\n", i, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), gnssGeoFence[i].radius / 100);
+		}
 	}
+  free(payload);
 }
 
 void Gnss::cfgNmea() {
-	CfgNmea * p = (CfgNmea *)payload;
+	gnssCfgNmea = *((CfgNmea *)payload);
 	char talkerId[14], gsv[8], filter[128], flags[96], gnss[96];
 	memset(talkerId, 0, 14);
 	memset(gsv, 0, 8);
@@ -1332,24 +1639,24 @@ void Gnss::cfgNmea() {
 	memset(flags, 0, 96);
 	memset(gnss, 0, 96);
 
-	if (p->filter.failedFix) strcat(filter, "dispFailedFix");
-	if (p->filter.invalidFix) strcat(filter, "|dispInvalidFix");
-	if (p->filter.invalidTime) strcat(filter, "|dispInvalidTime");
-	if (p->filter.invalidDate) strcat(filter, "|dispInvalidDate");
-	if (p->filter.invalidCog) strcat(filter, "|dispInvalidCOG");
-	if (p->filter.gpsOnly) strcat(filter, "|dispGPSonly");
+	if (gnssCfgNmea.filter.failedFix) strcat(filter, "dispFailedFix");
+	if (gnssCfgNmea.filter.invalidFix) strcat(filter, "|dispInvalidFix");
+	if (gnssCfgNmea.filter.invalidTime) strcat(filter, "|dispInvalidTime");
+	if (gnssCfgNmea.filter.invalidDate) strcat(filter, "|dispInvalidDate");
+	if (gnssCfgNmea.filter.invalidCog) strcat(filter, "|dispInvalidCOG");
+	if (gnssCfgNmea.filter.gpsOnly) strcat(filter, "|dispGPSonly");
 	if (filter[0] == 0) sprintf(filter, "none");
-	if (p->flags.compat) strcat(flags, "compatMode");
-	if (p->flags.consider) strcat(flags, "|consideringMode");
-	if (p->flags.limit82) strcat(flags, "|82charsLimit");
-	if (p->flags.highPrecision) strcat(flags, "|highPrecisionMode");
-	if (p->gnssFilter.disableGps) strcat(gnss, "disableGps");
-	if (p->gnssFilter.disableSbas) strcat(gnss, "|disableSbas");
-	if (p->gnssFilter.disableQzss) strcat(gnss, "|disableQzss");
-	if (p->gnssFilter.disableGlonass) strcat(gnss, "|disableGlonass");
-	if (p->gnssFilter.disableBeidou) strcat(gnss, "|disableBeidou");
+	if (gnssCfgNmea.flags.compat) strcat(flags, "compatMode");
+	if (gnssCfgNmea.flags.consider) strcat(flags, "|consideringMode");
+	if (gnssCfgNmea.flags.limit82) strcat(flags, "|82charsLimit");
+	if (gnssCfgNmea.flags.highPrecision) strcat(flags, "|highPrecisionMode");
+	if (gnssCfgNmea.gnssFilter.disableGps) strcat(gnss, "disableGps");
+	if (gnssCfgNmea.gnssFilter.disableSbas) strcat(gnss, "|disableSbas");
+	if (gnssCfgNmea.gnssFilter.disableQzss) strcat(gnss, "|disableQzss");
+	if (gnssCfgNmea.gnssFilter.disableGlonass) strcat(gnss, "|disableGlonass");
+	if (gnssCfgNmea.gnssFilter.disableBeidou) strcat(gnss, "|disableBeidou");
 	if (gnss[0] == 0) sprintf(gnss, "none");
-	switch (p->mainTalkerId) {
+	switch (gnssCfgNmea.mainTalkerId) {
 		case DEFAULT_TALKER_ID: sprintf(talkerId, "default"); break;
 		case GP_TALKER_ID: sprintf(talkerId, "GPS|SBAS|QZSS"); break;
 		case GL_TALKER_ID: sprintf(talkerId, "GLONASS"); break;
@@ -1357,36 +1664,39 @@ void Gnss::cfgNmea() {
 		case GA_TALKER_ID: sprintf(talkerId, "Galileo"); break;
 		case GB_TALKER_ID: sprintf(talkerId, "BeiDou"); break;
 	}
-	if (p->gsvTalkerId) sprintf(gsv, "default"); else sprintf(gsv, "main");
-	printf("cfgNmea nmeaVersion %x, maxSVs %u, displayNonNmeaSVs %u, filter %s, flags %s, Disabled GNSS %s, talkerId %s, gsvTalkerId %s, dbsTalkerId %s\n", p->nmeaVersion, p->maxSV, p->displayNonNmeaSVs, filter, flags, gnss, talkerId, gsv, p->dbsTalkerId);
+	if (gnssCfgNmea.gsvTalkerId) sprintf(gsv, "main"); else sprintf(gsv, "default");
+	printf("cfgNmea nmeaVersion %x, maxSVs %u, displayNonNmeaSVs %u, filter %s, flags %s, Disabled GNSS %s, talkerId %s, gsvTalkerId %s, bdsTalkerId \"%s\"\n", gnssCfgNmea.nmeaVersion, gnssCfgNmea.maxSV, gnssCfgNmea.displayNonNmeaSVs, filter, flags, gnss, talkerId, gsv, gnssCfgNmea.bdsTalkerId);
+  free(payload);
 }
 
 void Gnss::monVer(uint8_t extensionsNumber) {
-  MonVer * ver = (MonVer *)payload;
-  printf("Version sw: %s, hw: %s\n", ver->swVersion, ver->hwVersion);
+  gnssMonVer = *((MonVer *)payload);
+  printf("Version sw: %s, hw: %s\n", gnssMonVer.swVersion, gnssMonVer.hwVersion);
   printf("Extensions: \n");
-  for (uint8_t i = 0; i < extensionsNumber; i++) printf("%s\n", ver->extensions[i]);
+  for (uint8_t i = 0; i < extensionsNumber; i++) printf("%s\n", gnssMonVer.extensions[i]);
+  free(payload);
 }
 
 void Gnss::monGnss() {
-  GnssSupport * gnss = (GnssSupport *)payload;
+  supportedGnss = *((GnssSupport *)payload);
   char supported[32], def[32], enabled[32];
   memset(supported, 0, 32);
   memset(def, 0, 32);
   memset(enabled, 0, 32);
-  if (gnss->supportedGnss.Gps) strcat(supported, "Gps");
-  if (gnss->supportedGnss.Glonass) strcat(supported, "|Glonass");
-  if (gnss->supportedGnss.BeiDou) strcat(supported, "|BeiDou");
-  if (gnss->supportedGnss.Galileo) strcat(supported, "|Galileo");
-  if (gnss->defaultGnss.Gps) strcat(def, "Gps");
-  if (gnss->defaultGnss.Glonass) strcat(def, "|Glonass");
-  if (gnss->defaultGnss.BeiDou) strcat(def, "|BeiDou");
-  if (gnss->defaultGnss.Galileo) strcat(def, "|Galileo");
-  if (gnss->enabledGnss.Gps) strcat(enabled, "Gps");
-  if (gnss->enabledGnss.Glonass) strcat(enabled, "|Glonass");
-  if (gnss->enabledGnss.BeiDou) strcat(enabled, "|BeiDou");
-  if (gnss->enabledGnss.Galileo) strcat(enabled, "|Galileo");
-  printf("supportedGNSS %s, defaultGnss: %s, enabledGnss: %s, simul %hhu\n", supported, def, enabled, gnss->simultaneous);
+  if (supportedGnss.supportedGnss.Gps) strcat(supported, "Gps");
+  if (supportedGnss.supportedGnss.Glonass) strcat(supported, "|Glonass");
+  if (supportedGnss.supportedGnss.BeiDou) strcat(supported, "|BeiDou");
+  if (supportedGnss.supportedGnss.Galileo) strcat(supported, "|Galileo");
+  if (supportedGnss.defaultGnss.Gps) strcat(def, "Gps");
+  if (supportedGnss.defaultGnss.Glonass) strcat(def, "|Glonass");
+  if (supportedGnss.defaultGnss.BeiDou) strcat(def, "|BeiDou");
+  if (supportedGnss.defaultGnss.Galileo) strcat(def, "|Galileo");
+  if (supportedGnss.enabledGnss.Gps) strcat(enabled, "Gps");
+  if (supportedGnss.enabledGnss.Glonass) strcat(enabled, "|Glonass");
+  if (supportedGnss.enabledGnss.BeiDou) strcat(enabled, "|BeiDou");
+  if (supportedGnss.enabledGnss.Galileo) strcat(enabled, "|Galileo");
+  printf("supportedGNSS %s, defaultGnss: %s, enabledGnss: %s, simul %hhu\n", supported, def, enabled, supportedGnss.simultaneous);
+  free(payload);
 }
 
 void Gnss::monPatch() {
@@ -1396,7 +1706,8 @@ void Gnss::monPatch() {
 	char str[32];
 	memset(str, 0, 32);
 	printf("Patches");
-	for (uint8_t i = 0; i < p->numPatches; i++) {
+    numberOfPatches = p->numPatches;
+	for (uint8_t i = 0; i < numberOfPatches; i++) {
 		pp = (Patch *)(payload + sizeof(MonPatches) + sizeof(Patch) * i);
 		if (pp->patchInfo.activated) strcat(str, ": activated"); else strcat(str, ": not activated");
 		printf("%hhu, %s", i, str);
@@ -1407,48 +1718,51 @@ void Gnss::monPatch() {
 			case BBR: strcat(str, "|BBR"); break;
 			case FILE_SYSTEM: strcat(str, "|FILE_SYSTEM"); break;
 		}
-		printf(", location %s, comparator %lu, address %lu, data %lu\n", str, pp->comparatorNumber, pp->patchAddress, pp->patchData);
+		if (i < maxNumberOfPatches) patches[i] = *pp;
+		printf(", location %s, comparator %u, address %u, data %u\n", str, pp->comparatorNumber, pp->patchAddress, pp->patchData);
 	}
+  free(payload);
 }
 
 void Gnss::timTm() {
-	TimTm * p = (TimTm *)payload;
+	printf("timTm\n");
+	gnssTimTm = *((TimTm *)payload);
 	char str[196];
 	memset(str, 0, 196);
-	if (p->flags.mode) strcat(str, "mode running"); else strcat(str, "mode signle");
-	if (p->flags.stopped) strcat(str, "|stopped"); else strcat(str, "|armed");
-	if (p->flags.newFallingEdge) strcat(str, "|newFallingEdge");
-	switch (p->flags.timeBase) {
+	if (gnssTimTm.flags.mode) strcat(str, "mode running"); else strcat(str, "mode single");
+	if (gnssTimTm.flags.stopped) strcat(str, "|stopped"); else strcat(str, "|armed");
+	if (gnssTimTm.flags.newFallingEdge) strcat(str, "|newFallingEdge");
+	switch (gnssTimTm.flags.timeBase) {
 		case 0: strcat(str, "|Receiver Time Base"); break;
 		case 1: strcat(str, "|GNSS Time Base"); break;
 		case 2: strcat(str, "|UTC Time Base"); break;
 	}
-	if (p->flags.utcAvailable) strcat(str, "|utcAvailable"); else strcat(str, "|utcNotAvailable");
-	if (p->flags.timeValid) strcat(str, "|timeValid"); else strcat(str, "|timeNotValid");
-	if (p->flags.newRisingEdge) strcat(str, "|newRisingEdge");
-	printf("timTm: channel %u, count %u, weekNumRising %u, weekNumFalling %u, towRising %lu.%lums, towFalling %lu.%lu, accEst %luns, flags %s\n", p->channel, p->count, p->weekRising, p->weekFalling, p->towRising, p->towSubRising, p->towFalling, p->towSubFalling, p->accEst, str);
+	if (gnssTimTm.flags.utcAvailable) strcat(str, "|utcAvailable"); else strcat(str, "|utcNotAvailable");
+	if (gnssTimTm.flags.timeValid) strcat(str, "|timeValid"); else strcat(str, "|timeNotValid");
+	if (gnssTimTm.flags.newRisingEdge) strcat(str, "|newRisingEdge");
+	printf("timTm: channel %u, count %u, weekNumRising %u, weekNumFalling %u, towRising %u.%ums, towFalling %u.%u, accEst %uns, flags %s\n", gnssTimTm.channel, gnssTimTm.count, gnssTimTm.weekRising, gnssTimTm.weekFalling, gnssTimTm.towRising, gnssTimTm.towSubRising, gnssTimTm.towFalling, gnssTimTm.towSubFalling, gnssTimTm.accEst, str);
+  free(payload);
 }
 
 void Gnss::timTp() {
-  TimeTP * t = (TimeTP *)payload;
-  utcTime = (uint32_t)(t->weeks) * ONE_DAY * 7 + (t->tow / 1000) + GPS_UNIX_DIFF;
+  gnssTimeTp = *((TimeTP *)payload);
+  time_t utcTimeNext = (uint32_t)(gnssTimeTp.weeks) * ONE_DAY * 7 + (gnssTimeTp.tow / 1000) + GPS_UNIX_DIFF;
 
-  time_t ttt = time(NULL);
+  /*time_t ttt = time(NULL);
   tm * gmt = gmtime(&ttt), * lt = localtime(&ttt);
   char gmt_time[32], loc_time[32];
   strftime(gmt_time, 32, "%c", gmt);
   strftime(loc_time, 32, "%c", lt);
-  printf("utcTime %lu, time(NULL) %lu, diff %lu\n", utcTime, ttt, (ttt - utcTime)/3600);
+  printf("utcTime %lu, time(NULL) %lu, diff %lu\n", utcTime, ttt, utcTime - ttt);
   printf("UTC time: %s, local time: %s\n", gmt_time, loc_time);
-
-  ttp = true;
+  */
   char timeBase[64], timeRef[13], utcSource[15], tt[32];
   memset(timeBase, 0, 64);
   memset(timeRef, 0, 13);
   memset(utcSource, 0, 15);
 
-  if (t->timeBase.utcBase) {
-    switch (t->timeRef.utcSource) {
+  if (gnssTimeTp.timeBase.utcBase) {
+    switch (gnssTimeTp.timeRef.utcSource) {
       case NO_INFO: sprintf(utcSource, "NO_SOURCE_INFO"); break;
       case CRL: sprintf(utcSource, "CRL"); break;
       case NIST: sprintf(utcSource, "NIST"); break;
@@ -1461,93 +1775,173 @@ void Gnss::timTp() {
     }
     sprintf(timeBase, "UTC: %s", utcSource); 
   } else { 
-    switch (t->timeRef.timeRefGnss) {
+    switch (gnssTimeTp.timeRef.timeRefGnss) {
       case GPS_TP_TIME: sprintf(timeRef, "GPS"); break;
       case GLONASS_TP_TIME: sprintf(timeRef, "GLONASS"); break;
       case BEIDOU_TP_TIME: sprintf(timeRef, "BEIDOU"); break;
       case UNKNOWN_TP_TIME: sprintf(timeRef, "UNKNOWN_GNSS"); break;
     }
     sprintf(timeBase, "GNSS: %s", timeRef);
-    if (t->timeBase.utc) strcat(timeBase, "|UTC avail"); 
+    if (gnssTimeTp.timeBase.utc) strcat(timeBase, "|UTC avail"); 
   }
-  switch (t->timeBase.raim) {
+  switch (gnssTimeTp.timeBase.raim) {
     case RAIM_INFO_NOT_AVAILABLE: strcat(timeBase, "|RAIM_INFO_NOT_AVAIL"); break;
     case RAIM_NOT_ACTIVE: strcat(timeBase, "|RAIM_NOT_ACTIVE"); break;
     case RAIM_ACTIVE: strcat(timeBase, "|RAIM_ACTIVE"); break;
   }
-  strftime(tt, 32, "%c", localtime(&utcTime));
-  printf("timeTP utcTime %s, tow %lums, subTOW %lums 2^-32, quatErr %ldps, weeks %u, timeBase %s\n", tt, t->tow, t->subTOW, t->quantErr, t->weeks, timeBase);
+  strftime(tt, 32, "%c", localtime(&utcTimeNext));
+  printf("timeTP utcTimeNextPPS %s, tow %ums, subTOW %ums 2^-32, quatErr %dps, weeks %u, timeBase %s\n", tt, gnssTimeTp.tow, gnssTimeTp.subTOW, gnssTimeTp.quantErr, gnssTimeTp.weeks, timeBase);
+  free(payload);
 }
 
 void Gnss::logInfo() {
-  LogInfo * log = (LogInfo *)payload; //getLogInfo();
+  gnssLogInfo = *((LogInfo *)payload);
   struct tm tm_time;
   char flags[64], ot[32], nt[32];
   memset(flags, 0, 64);
   memset(ot, 0, 32);
   memset(nt, 0, 32);
-  time_t oldest = mktime(gps2tm(&(log->oldestDateTime), &tm_time));
+  time_t oldest = mktime(gps2tm(&(gnssLogInfo.oldestDateTime), &tm_time));
   strftime(ot, 32, "%c", localtime(&oldest));
-  time_t newest = mktime(gps2tm(&(log->newestDateTime), &tm_time));
+  time_t newest = mktime(gps2tm(&(gnssLogInfo.newestDateTime), &tm_time));
   strftime(nt, 32, "%c", localtime(&newest));
-  if (log->flags.enabled) sprintf(flags, "enabled"); else sprintf(flags, "disabled");
-  if (log->flags.inactive) strcat(flags, "|inactive"); else strcat(flags, "|active");
-  if (log->flags.circular) strcat(flags, "|circular"); else strcat(flags, "|non-circular");
-  printf("logInfo: fileStoreCapacity %lu bytes, maxLogSize %lu bytes, logSize %lu bytes, numRecords %lu, oldest %s, newest %s, flags %s\n", log->fileStoreCapacity, log->currentMaxLogSize, log->currentLogSize, log->entryCount, ot, nt, flags);
+  if (gnssLogInfo.flags.enabled) sprintf(flags, "enabled"); else sprintf(flags, "disabled");
+  if (gnssLogInfo.flags.inactive) strcat(flags, "|inactive"); else strcat(flags, "|active");
+  if (gnssLogInfo.flags.circular) strcat(flags, "|circular"); else strcat(flags, "|non-circular");
+  printf("logInfo: fileStoreCapacity %u bytes, maxLogSize %u bytes, logSize %u bytes, numRecords %u, oldest %s, newest %s, flags %s\n", gnssLogInfo.fileStoreCapacity, gnssLogInfo.currentMaxLogSize, gnssLogInfo.currentLogSize, gnssLogInfo.entryCount, ot, nt, flags);
+  free(payload);
 }
 
 void Gnss::logRetrievePos() {
-	LogRetrievePos * rec = (LogRetrievePos *)(payload);
+	gnssLogPos = *((LogRetrievePos *)(payload));
 	Latitude lat;
     Longitude lon;
-    longLatToDMS(&lat, rec->lat);
-    longLonToDMS(&lon, rec->lon);
+    longLatToDMS(&lat, gnssLogPos.lat);
+    longLonToDMS(&lon, gnssLogPos.lon);
 	tm tm_time;
 	char tt[32];
 	memset(tt, 0, 32);
-	time_t t = mktime(gps2tm(&(rec->dateTime), &tm_time));
+	time_t t = mktime(gps2tm(&(gnssLogPos.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	printf("idx %lu: %s %s %s +/- %lum, alt %ldm above MSL, speed %lum/s, heading %ludeg, fixType %u, numSV %u\n", rec->index, tt, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), rec->hAcc / 1000, rec->altMSL / 1000, rec->gSpeed / 1000, rec->heading / 100000, rec->fixType, rec->numSV);
+	printf("idx %u: %s %s %s +/- %um, alt %dm above MSL, speed %um/s, heading %udeg, fixType %u, numSV %u\n", gnssLogPos.index, tt, dmsLatToStr(&lat).c_str(), dmsLonToStr(&lon).c_str(), gnssLogPos.hAcc / 1000, gnssLogPos.altMSL / 1000, gnssLogPos.gSpeed / 1000, gnssLogPos.heading / 100000, gnssLogPos.fixType, gnssLogPos.numSV);
+  free(payload);
 }
 
 void Gnss::logRetrievePosExtra() {
   tm tm_time;
   char tt[32];
   memset(tt, 0, 32);
-  LogRetrievePosExtra * odo = (LogRetrievePosExtra *)(payload); 
-  time_t t = mktime(gps2tm(&(odo->dateTime), &tm_time));
+  gnssLogOdo = *((LogRetrievePosExtra *)payload); 
+  time_t t = mktime(gps2tm(&(gnssLogOdo.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  printf("idx %lu: %s distance %lu\n", odo->index, tt, odo->distance);
+  printf("idx %u: %s distance %u\n", gnssLogOdo.index, tt, gnssLogOdo.distance);
+  free(payload);
 }
 
 void Gnss::logRetrieveString() {
   tm tm_time;
   char tt[32];
   memset(tt, 0, 32);
-  LogRetrievestring * str = (LogRetrievestring *)(payload);
-  time_t t = mktime(gps2tm(&(str->dateTime), &tm_time)); 
+  gnssLogString = *((LogRetrieveString *)payload);
+  time_t t = mktime(gps2tm(&(gnssLogString.dateTime), &tm_time)); 
   strftime(tt, 32, "%c", localtime(&t));
-  char * ss = (char *)(payload + sizeof(LogRetrievestring));
-  printf("idx %lu: %s %s\n", str->index, tt, ss);
+  char * ss = (char *)(payload + sizeof(LogRetrieveString));
+  printf("idx %u: %s %s\n", gnssLogString.index, tt, ss);
+  free(payload);
 }
 
 void Gnss::logFindTime() {
-	LogFindTimeResponse * res = (LogFindTimeResponse *)payload;
-	printf("logFindTime response: index %u\n", res->index);
+  LogFindTimeResponse * res = (LogFindTimeResponse *)payload;
+  logIndex = res->index;
+  printf("logFindTime response: index %u\n", res->index);
+  free(payload);
 }
 
 void Gnss::infMsg(const char * infLevel) {
-	char * s = (char *)malloc(payloadLength);
-	printf("%s: %s\n", infLevel, (char *)payload);
-	free(s);
+  printf("%s: %s\n", infLevel, (char *)payload);
+  free(payload);
 }
 
 void Gnss::ackAck() {
-
+	ubxAck = *((UbxAck *)payload);
+	switch (ubxAck.classId) {
+		case UBX_CFG:
+			switch (ubxAck.messageId) {
+				case CFG_PRT: cfgPrtOk = true; break;
+				case CFG_MSG: cfgMsgOk = true; break;
+				case CFG_INF: cfgInfOk = true; break;
+				case CFG_RST: cfgRstOk = true; break;
+				case CFG_RATE: cfgRateOk = true; break;
+				case CFG_CFG: cfgCfgOk = true; break;
+				case CFG_RXM: cfgRxmOk = true; break;
+				case CFG_SBAS: cfgSbasOk = true; break;
+				case CFG_NMEA: cfgNmeaOk = true; break;
+				case CFG_ODO: cfgOdoOk = true; break;
+				case CFG_NAV5: cfgNavOk = true; break;
+				case CFG_TP5: cfgTpOk = true; break;
+				case CFG_PM2: cfgPmOk = true; break;
+				case CFG_GNSS: cfgGnssOk = true; break;
+				case CFG_LOGFILTER: cfgLogfilterOk = true; break;
+				case CFG_GEOFENCE: cfgGeofenceOk = true; break;
+				case CFG_PMS: cfgPmsOk = true; break;
+				case CFG_SLAS: cfgSlasOk = true; break;
+			}
+			break;
+		case UBX_LOG:
+			switch (ubxAck.messageId) {
+				case LOG_CREATE: logCreateOk = true; break;
+				case LOG_ERASE: logEraseOk = true; break;
+			}
+			break;
+		case UBX_NAV:
+			switch (ubxAck.messageId) {
+			case NAV_RESETODO: resetOdoOk = true; break;
+			}
+			break;
+	}
+    if (DEBUG_UBX) printf("ACK_ACK: msgClass %X, msgId %X\n", ubxAck.classId, ubxAck.messageId);
+  free(payload);
 }
 
 void Gnss::ackNak() {
-
+	ubxNak = *((UbxAck *)payload);
+	switch (ubxAck.classId) {
+		case UBX_CFG:
+			switch (ubxAck.messageId) {
+				case CFG_PRT: cfgPrtOk = false; break;
+				case CFG_MSG: cfgMsgOk = false; break;
+				case CFG_INF: cfgInfOk = false; break;
+				case CFG_RST: cfgRstOk = false; break;
+				case CFG_RATE: cfgRateOk = false; break;
+				case CFG_CFG: cfgCfgOk = false; break;
+				case CFG_RXM: cfgRxmOk = false; break;
+				case CFG_SBAS: cfgSbasOk = false; break;
+				case CFG_NMEA: cfgNmeaOk = false; break;
+				case CFG_ODO: cfgOdoOk = false; break;
+				case CFG_NAV5: cfgNavOk = false; break;
+				case CFG_TP5: cfgTpOk = false; break;
+				case CFG_PM2: cfgPmOk = false; break;
+				case CFG_GNSS: cfgGnssOk = false; break;
+				case CFG_LOGFILTER: cfgLogfilterOk = false; break;
+				case CFG_GEOFENCE: cfgGeofenceOk = false; break;
+				case CFG_PMS: cfgPmsOk = false; break;
+				case CFG_SLAS: cfgSlasOk = false; break;
+			}
+			break;
+		case UBX_LOG:
+			switch (ubxAck.messageId) {
+				case LOG_CREATE: logCreateOk = false; break;
+				case LOG_ERASE: logEraseOk = false; break;
+			}
+			break;
+		case UBX_NAV:
+			switch (ubxAck.messageId) {
+				case NAV_RESETODO: resetOdoOk = false; break;
+			}
+			break;
+	}
+	if (DEBUG_UBX) printf("ACK_NAK: msgClass %X, msgId %X\n", ubxNak.classId, ubxNak.messageId);
+  free(payload);
 }
 
 //Recommended Minimum data
@@ -1579,7 +1973,7 @@ void Gnss::nmeaGga() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  printf("GNGGA %s %s %s, fix type: %u, numSVs: %u, hDOP %.2f, alt %.fm, geoidDiff %.fm, ageDC %lus, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType, data.numSV, (double)(data.hDOP), (double)(data.alt), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
+  printf("GNGGA %s %s %s, fix type: %u, numSVs: %u, hDOP %.2f, alt %.fm, geoidDiff %.fm, ageDC %us, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType, data.numSV, (double)(data.hDOP), (double)(data.alt), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
 }
 
 //GNSS DOP and Active Satellites
@@ -1623,7 +2017,7 @@ void Gnss::nmeaGll() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  printf("GNGLL: %s %s %s, fix type: %c\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType);
+  printf("GNGLL: %s %s %s, fix type: %c\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), data.fixType);  
 }
 
 //GNSS Pseudo Range Error Statistics
@@ -1635,14 +2029,14 @@ void Gnss::nmeaGst() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  printf("GNGST: %s, RangeRms %.fm, stdLat %.fm, stdLon %.fm, stdAlt %.fm\n", tt, (double)(data.rangeRms), (double)(data.stdLat), (double)(data.stdLon), (double)(data.stdAlt));
+  printf("GNGST: %s, RangeRms %.fm, stdLat %.fm, stdLon %.fm, stdAlt %.fm\n", tt, (double)(data.rangeRms), (double)(data.stdLat), (double)(data.stdLon), (double)(data.stdAlt));  
 }
 
 //Dual ground/water distance
 void Gnss::nmeaVlw() {
   GNVLW data;
   getGNVLW(&data);
-  printf("GNVLW: TWD %.1f%c, WD %.1f%c, TGD %.1f%c, GD %.1f%c\n", (double)(data.twd), data.twdUnit, (double)(data.wd), data.wdUnit, (double)(data.tgd), data.tgdUnit, (double)(data.gd), data.gdUnit); 
+  printf("GNVLW: TWD %.1f%c, WD %.1f%c, TGD %.1f%c, GD %.1f%c\n", (double)(data.twd), data.twdUnit, (double)(data.wd), data.wdUnit, (double)(data.tgd), data.tgdUnit, (double)(data.gd), data.gdUnit);  
 }
 
 //GNSS fix data
@@ -1654,7 +2048,7 @@ void Gnss::nmeaGns() {
 	memset(tt, 0, 32);
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	printf("GNGNS: %s %s %s, atl %.fm, fixType[GPS] %c|fixType[GLO] %c, numSV %u, hDOP %.2f, geoidDiff %.fm, AgeDC %luc, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.alt), data.fixType[0], data.fixType[1], data.numSV, (double)(data.hDOP), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);
+	printf("GNGNS: %s %s %s, atl %.fm, fixType[GPS] %c|fixType[GLO] %c, numSV %u, hDOP %.2f, geoidDiff %.fm, AgeDC %uc, stId %u\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.alt), data.fixType[0], data.fixType[1], data.numSV, (double)(data.hDOP), (double)(data.geoidEllipsoidDiff), data.ageDiffCorr, data.diffCorrStationId);	
 }
 
 //Time and Date
@@ -1666,8 +2060,7 @@ void Gnss::nmeaZda() {
 	tm tm_time;
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	printf("GNZDA: %s %d:%u\n", tt, data.utcOffsetHours, data.utcOffsetMinutes);
-    
+	printf("GNZDA: %s %d:%u\n", tt, data.utcOffsetHours, data.utcOffsetMinutes);	
 }
 
 void Gnss::nmeaTxt() {
@@ -1680,7 +2073,7 @@ void Gnss::nmeaTxt() {
 		case 2: sprintf(t, "Notice"); break;
 		case 7: sprintf(t, "User"); break;
 	}
-	printf("GNTXT: message %u out of %u \"%s! %s\"\n", data.msgNum, data.numMsg, t, data.text.c_str());
+	printf("GNTXT: message %u out of %u \"%s! %s\"\n", data.msgNum, data.numMsg, t, data.text.c_str());	
 }
 
 void Gnss::nmeaGbs() {
@@ -1691,13 +2084,13 @@ void Gnss::nmeaGbs() {
 	memset(tt, 0, 32);
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	printf("GBS: %s Lat err %.1fm, Lon err %.1fm, Alt err %.1fm, failed svId %u, bias %.1fm, stddev %.1fm, sysId %u, sigId %u\n", tt, (double)(data.errLat), (double)(data.errLon), (double)(data.errAlt), data.svId, (double)(data.bias), (double)(data.stddev), data.systemId, data.signalId);
+	printf("GBS: %s Lat err %.1fm, Lon err %.1fm, Alt err %.1fm, failed svId %u, bias %.1fm, stddev %.1fm, sysId %u, sigId %u\n", tt, (double)(data.errLat), (double)(data.errLon), (double)(data.errAlt), data.svId, (double)(data.bias), (double)(data.stddev), data.systemId, data.signalId);	
 }
 
 void Gnss::nmeaDtm() {
 	DTM data;
 	getDtm(&data);
-	printf("DTM: datum %s differs from refDatum %s by %.1f\'%c %.1f\'%c %.1fm\n", data.datum.c_str(), data.refDatum.c_str(), (double)(data.lat), data.NS, (double)(data.lon), data.EW, (double)(data.alt));
+	printf("DTM: datum %s differs from refDatum %s by %.1f\'%c %.1f\'%c %.1fm\n", data.datum.c_str(), data.refDatum.c_str(), (double)(data.lat), data.NS, (double)(data.lon), data.EW, (double)(data.alt));	
 }
 
 void Gnss::nmeaGrs() {
@@ -1714,12 +2107,13 @@ void Gnss::nmeaGrs() {
 		sprintf(s, "%.1fm ", (double)(data.residual[i]));
 		strcat(ss, s);
 	}
-	printf("GRS: %s %s sysId %u, sigId %u\n", tt, ss, data.systemId, data.signalId);
+	printf("GRS: %s %s sysId %u, sigId %u\n", tt, ss, data.systemId, data.signalId);	
 }
 
-void Gnss::nmeaGpq(const char* talkerId, const char* msgId) {
+void Gnss::nmeaGpq(const char* msgId, const char* talkerId) {
 	uint8_t x = 0;
 	char s[32], ss[32];
+
 	memset(s, 0, 32);
 	memset(ss, 0, 32);
 
@@ -1729,12 +2123,14 @@ void Gnss::nmeaGpq(const char* talkerId, const char* msgId) {
 		x ^= s[i];
 	}
 	sprintf(ss, "$%s*%X\r\n", s, x);
-	//printf(ss);
-	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	if (DEBUG_NMEA) printf("Sending NMEA GPQ package: %s\n", ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) {
+		printf("poll(): write() error: %s\n", strerror(errno));		
+	}
 	tcdrain(fd);
 }
 
-void Gnss::nmeaGnq(const char* talkerId, const char* msgId) {
+void Gnss::nmeaGnq(const char* msgId, const char* talkerId) {
 	uint8_t x = 0;
 	char s[32], ss[32];
 	memset(s, 0, 32);
@@ -1746,12 +2142,14 @@ void Gnss::nmeaGnq(const char* talkerId, const char* msgId) {
 		x ^= s[i];
 	}
 	sprintf(ss, "$%s*%X\r\n", s, x);
-	//printf(ss);
-	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	if (DEBUG_NMEA) printf("Sending NMEA GNQ package: %s\n", ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) {
+		printf("poll(): write() error: %s\n", strerror(errno));		
+	}
 	tcdrain(fd);
 }
 
-void Gnss::nmeaGlq(const char* talkerId, const char* msgId) {
+void Gnss::nmeaGlq(const char* msgId, const char* talkerId) {
 	uint8_t x = 0;
 	char s[32], ss[32];
 	memset(s, 0, 32);
@@ -1763,12 +2161,14 @@ void Gnss::nmeaGlq(const char* talkerId, const char* msgId) {
 		x ^= s[i];
 	}
 	sprintf(ss, "$%s*%X\r\n", s, x);
-	//printf(ss);
-	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	if (DEBUG_NMEA) printf("Sending NMEA GLQ package: %s\n", ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) {
+		printf("poll(): write() error: %s\n", strerror(errno));
+	}
 	tcdrain(fd);
 }
 
-void Gnss::nmeaGbq(const char* talkerId, const char* msgId) {
+void Gnss::nmeaGbq(const char* msgId, const char* talkerId) {
 	uint8_t x = 0;
 	char s[32], ss[32];
 	memset(s, 0, 32);
@@ -1780,8 +2180,10 @@ void Gnss::nmeaGbq(const char* talkerId, const char* msgId) {
 		x ^= s[i];
 	}
 	sprintf(ss, "$%s*%X\r\n", s, x);
-	//printf(ss);
-	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	if (DEBUG_NMEA) printf("Sending NMEA GBQ package: %s\n", ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) {
+		printf("poll(): write() error: %s\n", strerror(errno));		
+	}
 	tcdrain(fd);
 }
 
@@ -1793,7 +2195,7 @@ void Gnss::pubxPosition() {
 	tm tm_time;
 	time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
 	strftime(tt, 32, "%c", localtime(&t));
-	printf("pubxPosition: %s %s %s +/- %.fm, alt %.f +/- %.fm above ellipsoid, SOG %.1fkm/h, COG %u, vVel %.2fm/s, hDOP %.2f, vDOP %.2f, tDOP %.2f, ageDC %luc, numSV %u, fixType %s\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.hAcc), (double)(data.alt), (double)(data.vAcc), (double)(data.sog), data.cog, (double)(data.vVel), (double)(data.hDOP), (double)(data.vDOP), (double)(data.tDOP), data.ageDiffCorr, data.numSV, data.fixType);
+	printf("pubxPosition: %s %s %s +/- %.fm, alt %.f +/- %.fm above ellipsoid, SOG %.1fkm/h, COG %u, vVel %.2fm/s, hDOP %.2f, vDOP %.2f, tDOP %.2f, ageDC %uc, numSV %u, fixType %s\n", tt, dmsLatToStr(&(data.lat)).c_str(), dmsLonToStr(&(data.lon)).c_str(), (double)(data.hAcc), (double)(data.alt), (double)(data.vAcc), (double)(data.sog), data.cog, (double)(data.vVel), (double)(data.hDOP), (double)(data.vDOP), (double)(data.tDOP), data.ageDiffCorr, data.numSV, data.fixType);
 }
 
 void Gnss::pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId, bool autoBauding) {
@@ -1804,18 +2206,20 @@ void Gnss::pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, P
 
 	uint16_t im = inMask.inUbx | (inMask.inNmea << 1) | (inMask.inRtcm << 2), om = outMask.outUbx | (outMask.outNmea << 1);
 	uint8_t ab = autoBauding ? 1 : 0;
-	sprintf(s, "PUBX,41,%u,%.4u,%.4u,%lu,%u", (uint8_t)portId, im, om, (uint32_t)rate, ab);
+	sprintf(s, "PUBX,41,%u,%.4u,%.4u,%u,%u", (uint8_t)portId, im, om, (uint32_t)rate, ab);
 
 	for (uint8_t i = 0; i < strlen(s); i++ ) {
 		x ^= s[i];
 	}
 	sprintf(ss, "$%s*%X\r\n", s, x);
-	//printf(ss);
-	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	if (DEBUG_NMEA) printf("Sending NMEA PUBX_CONFIG package: %s\n", ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) {
+		printf("poll(): write() error: %s\n", strerror(errno));	
+	}
 	tcdrain(fd);
 }
 
-void Gnss::pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2, uint8_t rateDDC, uint8_t rateUsb, uint8_t rateSpi) {
+void Gnss::pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2, uint8_t rateUsb, uint8_t rateDDC, uint8_t rateSpi) {
 	uint8_t x = 0;
 	char s[255], ss[255];
 	memset(s, 0, 255);
@@ -1826,8 +2230,10 @@ void Gnss::pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2, uint
 		x ^= s[i];
 	}
 	sprintf(ss, "$%s*%X\r\n", s, x);
-	//printf(ss);
-	if (write(fd, ss, strlen(ss)) != strlen(ss)) printf("poll(): write() error: %s\n", strerror(errno));
+	if (DEBUG_NMEA) printf("Sending NMEA PUBX_RATE package: %s\n", ss);
+	if (write(fd, ss, strlen(ss)) != strlen(ss)) {
+		printf("poll(): write() error: %s\n", strerror(errno));
+	}
 	tcdrain(fd);
 }
 
@@ -1864,429 +2270,337 @@ void Gnss::pubxTime() {
   tm tm_time;
   time_t t = mktime(gps2tm(&(data.dateTime), &tm_time));
   strftime(tt, 32, "%c", localtime(&t));
-  printf("PubxTime %s, utcTow: %lus, utcWeek: %lu, leapSec %u, leapSecSrc %c, clkBias %luns, clkDrift %luns/s, tpGran %luns\n", tt, data.utcTow, data.utcWeek, data.leapSec, data.leapSecSrc, data.clkBias, data.clkDrift, data.tpGran);
+  printf("PubxTime %s, utcTow: %us, utcWeek: %u, leapSec %u, leapSecSrc %c, clkBias %dns, clkDrift %.3fns/s, tpGran %uns\n", tt, data.utcTow, data.utcWeek, data.leapSec, data.leapSecSrc, data.clkBias, data.clkDrift, data.tpGran);
 }
 
 //UBX messages
-MonVer * Gnss::getVersion(uint32_t timeout) {
+void Gnss::getVersion() {
   	poll(UBX_MON, MON_VER);
-	if (pollNoError(timeout)) return (MonVer *)(payload);
-	return NULL;
 }
 
-MonPatches * Gnss::getPatches(uint32_t timeout) {
+uint16_t Gnss::getPatches() {
   	poll(UBX_MON, MON_PATCH);
-	if (pollNoError(timeout)) return (MonPatches *)(payload);
-	return NULL;	
+	return numberOfPatches;
 }
 
-CfgNav * Gnss::getCfgNav(uint32_t timeout) {
+bool Gnss::getCfgNav() {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) return (CfgNav *)(payload);
-  return NULL;
+  return cfgNavOk;
 }
 
-DynModel Gnss::getDynamicModel(uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+DynModel Gnss::getDynamicModel() {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	  cfgNav = (CfgNav *)(payload);
-	  return cfgNav->dynModel;
+  return cfgNavOk ? gnssNav.dynModel : MODEL_ERROR;
+}
+
+bool Gnss::setDynamicModel(DynModel model) {
+  if (gnssNav.dynModel != model) {
+	  gnssNav.dynModel = model;
+	  memset(&(gnssNav.mask), 0, sizeof(uint16_t));
+	  gnssNav.mask.dyn = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return MODEL_ERROR;
+  return cfgNavOk;
 }
 
-bool Gnss::setDynamicModel(DynModel model, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+UtcStandard Gnss::getUtcStandard() {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->dynModel != model) {
-	  cfgNav->dynModel = model;
-	  cfgNav->mask.dyn = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+  return cfgNavOk ? gnssNav.utcStandard : UTC_ERROR;
 }
 
-UtcStandard Gnss::getUtcStandard(uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	  cfgNav = (CfgNav *)(payload);
-	  return cfgNav->utcStandard;
+bool Gnss::setUtcStandard(UtcStandard standard) {
+  if (gnssNav.utcStandard != standard) {
+	  gnssNav.utcStandard = standard;
+	  memset(&(gnssNav.mask), 0, sizeof(uint16_t));
+	  gnssNav.mask.utcMask = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return UTC_ERROR;
+  return cfgNavOk;
 }
 
-bool Gnss::setUtcStandard(UtcStandard standard, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+FixMode Gnss::getFixMode() {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->utcStandard != standard) {
-	  cfgNav->utcStandard = standard;
-	  cfgNav->mask.utcMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+  return cfgNavOk ? gnssNav.fixMode : FIX_MODE_ERROR;
 }
 
-FixMode Gnss::getFixMode(uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::setFixMode(FixMode fixMode) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	return cfgNav->fixMode;
+  if (!cfgNavOk) return false;
+  if (gnssNav.fixMode != fixMode) {
+	  gnssNav.fixMode = fixMode;
+	  gnssNav.mask.posFixMode = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return FIX_MODE_ERROR;
+  return cfgNavOk;
 }
 
-bool Gnss::setFixMode(FixMode fixMode, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::getFixedAlt(FixedAlt * fixedAlt) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->fixMode != fixMode) {
-	  cfgNav->fixMode = fixMode;
-	  cfgNav->mask.posFixMode = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+  if (!cfgNavOk) return false;
+  fixedAlt->fixedAlt = gnssNav.fixedAlt;
+  fixedAlt->fixedAltVar = gnssNav.fixedAltVar;
+  return cfgNavOk;
 }
 
-FixedAlt * Gnss::getFixedAlt(FixedAlt * fixedAlt, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::setFixedAlt(FixedAlt * fixedAlt) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	fixedAlt->fixedAlt = cfgNav->fixedAlt;
-	fixedAlt->fixedAltVar = cfgNav->fixedAltVar;
-	return fixedAlt;
+  if (!cfgNavOk) return false;
+  if (gnssNav.fixedAlt != fixedAlt->fixedAlt || gnssNav.fixedAltVar != fixedAlt->fixedAltVar) {
+	  gnssNav.fixedAlt = fixedAlt->fixedAlt;
+	  gnssNav.fixedAltVar = fixedAlt->fixedAltVar;
+	  gnssNav.mask.posMask = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return NULL;
+  return cfgNavOk;
 }
 
-bool Gnss::setFixedAlt(int32_t fixedAlt, uint32_t fixedAltVar, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::getDop(DOP * dop) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->fixedAlt != fixedAlt || cfgNav->fixedAltVar != fixedAltVar) {
-	  cfgNav->fixedAlt = fixedAlt;
-	  cfgNav->fixedAltVar = fixedAltVar;
-	  cfgNav->mask.posMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+  if (!cfgNavOk) return false;
+  dop->pDOP = gnssNav.pDOP;
+  dop->tDOP = gnssNav.tDOP;
+  return cfgNavOk;
 }
 
-DOP * Gnss::getDop(DOP * dop, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::setDop(DOP * dop) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	dop->pDOP = cfgNav->pDOP;
-	dop->tDOP = cfgNav->tDOP;
-	return dop;
+  if (!cfgNavOk) return false;
+  gnssNav.pDOP = dop->pDOP;
+  gnssNav.tDOP = dop->tDOP;
+  gnssNav.mask.posMask = 1;
+  gnssNav.mask.timeMask = 1;
+  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
+  return cfgNavOk;
+}
+
+bool Gnss::getAccuracy(Accuracy * acc) {
+  poll(UBX_CFG, CFG_NAV5);
+  if (!cfgNavOk) return false;
+  acc->pAcc = gnssNav.pAcc;
+  acc->tAcc = gnssNav.tAcc;
+  return cfgNavOk;
+}
+
+bool Gnss::setAccuracy(Accuracy * acc) {
+  poll(UBX_CFG, CFG_NAV5);
+  if (!cfgNavOk) return false;
+  gnssNav.pAcc = acc->pAcc;
+  gnssNav.tAcc = acc->tAcc;
+  gnssNav.mask.posMask = 1;
+  gnssNav.mask.timeMask = 1;
+  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
+  return cfgNavOk;
+}
+
+bool Gnss::getCnoThreshold(CnoThreshold * cno) {
+  poll(UBX_CFG, CFG_NAV5);
+  if (!cfgNavOk) return false;
+  cno->cnoThreshold = gnssNav.cnoThreshold;
+  cno->cnoThresholdNumSVs = gnssNav.cnoThresholdNumSVs;
+  return cfgNavOk;
+}
+
+bool Gnss::setCnoThreshold(CnoThreshold * cno) {
+  poll(UBX_CFG, CFG_NAV5);
+  if (!cfgNavOk) return false;
+  if (gnssNav.cnoThreshold != cno->cnoThreshold || gnssNav.cnoThresholdNumSVs != cno->cnoThresholdNumSVs) {
+	  gnssNav.cnoThreshold = cno->cnoThreshold;
+	  gnssNav.cnoThresholdNumSVs = cno->cnoThresholdNumSVs;
+	  gnssNav.mask.cnoThreshold = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return NULL;
+  return cfgNavOk;
 }
 
-bool Gnss::setDop(uint16_t posDOP, uint16_t timeDOP, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::getStaticHoldThresholds(StaticHoldThresholds * thresholds) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  cfgNav->pDOP = posDOP;
-  cfgNav->tDOP = timeDOP;
-  cfgNav->mask.posMask = 1;
-  cfgNav->mask.timeMask = 1;
-  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-  if (ackNoError(timeout)) return true;
-  return false;
+  if (!cfgNavOk) return false;
+  thresholds->staticHoldThreshold = gnssNav.staticHoldThreshold;
+  thresholds->staticHoldMaxDistance = gnssNav.staticHoldMaxDistance;
+  return cfgNavOk;
 }
 
-Accuracy * Gnss::getAccuracy(Accuracy * acc, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::setStaticHoldThresholds(StaticHoldThresholds * thresholds) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	acc->pAcc = cfgNav->pAcc;
-	acc->tAcc = cfgNav->tAcc;
-	return acc;
+  if (!cfgNavOk) return false;
+  if (gnssNav.staticHoldThreshold != thresholds->staticHoldThreshold || gnssNav.staticHoldMaxDistance != thresholds->staticHoldMaxDistance) {
+	  gnssNav.staticHoldThreshold = thresholds->staticHoldThreshold;
+	  gnssNav.staticHoldMaxDistance = thresholds->staticHoldMaxDistance;
+	  gnssNav.mask.staticHoldMask = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return NULL;
+  return cfgNavOk;
 }
 
-bool Gnss::setAccuracy(uint16_t posAccuracy, uint16_t timeAccuracy, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+int8_t Gnss::getMinElev() {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  cfgNav->pAcc = posAccuracy;
-  cfgNav->tAcc = timeAccuracy;
-  cfgNav->mask.posMask = 1;
-  cfgNav->mask.timeMask = 1;
-  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-  if (ackNoError(timeout)) return true;
-  return false;
+  return cfgNavOk ? gnssNav.minElev : -127;
 }
 
-CnoThreshold * Gnss::getCnoThreshold(CnoThreshold * cno, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
+bool Gnss::setMinElev(int8_t minElev) {
   poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	cno->cnoThreshold = cfgNav->cnoThreshold;
-	cno->cnoThresholdNumSVs = cfgNav->cnoThresholdNumSVs;
-	return cno;
+  if (!cfgNavOk) return false;
+  gnssNav.minElev = minElev;
+  gnssNav.mask.minElev = 1;
+  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
+  return cfgNavOk;
+}
+
+uint8_t Gnss::getDgnssTimeout() {
+  poll(UBX_CFG, CFG_NAV5);
+  return cfgNavOk ? gnssNav.dgnssTimeout : 0;
+}
+
+bool Gnss::setDgnssTimeout(int8_t dgnssTimeout) {
+  poll(UBX_CFG, CFG_NAV5);
+  if (!cfgNavOk) return false;
+  if (gnssNav.dgnssTimeout != dgnssTimeout) {
+	  gnssNav.dgnssTimeout = dgnssTimeout;
+	  gnssNav.mask.dgpsMask = 1;
+	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)&gnssNav);
   }
-  return NULL;
+  return cfgNavOk;
 }
 
-bool Gnss::setCnoThreshold(uint8_t cnoThreshold, uint8_t cnoThresholdNumSVs, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->cnoThreshold != cnoThreshold || cfgNav->cnoThresholdNumSVs != cnoThresholdNumSVs) {
-	  cfgNav->cnoThreshold = cnoThreshold;
-	  cfgNav->cnoThresholdNumSVs = cnoThresholdNumSVs;
-	  cfgNav->mask.cnoThreshold = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
-}
-
-StaticHoldThresholds * Gnss::getStaticHoldThresholds(StaticHoldThresholds * thresholds, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	thresholds->staticHoldThreshold = cfgNav->staticHoldThreshold;
-	thresholds->staticHoldMaxDistance = cfgNav->staticHoldMaxDistance;
-	return thresholds;
-  }
-  return NULL;
-}
-
-bool Gnss::setStaticHoldThresholds(uint8_t staticHoldThreshold, uint8_t staticHoldMaxDistance, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->staticHoldThreshold != staticHoldThreshold || cfgNav->staticHoldMaxDistance != staticHoldMaxDistance) {
-	  cfgNav->staticHoldThreshold = staticHoldThreshold;
-	  cfgNav->staticHoldMaxDistance = staticHoldMaxDistance;
-	  cfgNav->mask.staticHoldMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
-}
-
-int8_t Gnss::getMinElev(uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	return cfgNav->minElev;
-  }
-  return 0;
-}
-
-bool Gnss::setMinElev(int8_t minElev, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->minElev != minElev) {
-	  cfgNav->minElev = minElev;
-	  cfgNav->mask.minElev = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
-}
-
-int8_t Gnss::getDgnssTimeout(uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) {
-	cfgNav = (CfgNav *)(payload);
-	return cfgNav->dgnssTimeout;
-  }
-  return 0;
-}
-
-bool Gnss::setDgnssTimeout(int8_t dgnssTimeout, uint32_t timeout) {
-  CfgNav * cfgNav = NULL;
-  poll(UBX_CFG, CFG_NAV5);
-  if (pollNoError(timeout)) cfgNav = (CfgNav *)(payload);
-  else return false;
-
-  if (cfgNav->dgnssTimeout != dgnssTimeout) {
-	  cfgNav->dgnssTimeout = dgnssTimeout;
-	  cfgNav->mask.dgpsMask = 1;
-	  poll(UBX_CFG, CFG_NAV5, sizeof(CfgNav), (uint8_t *)cfgNav);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
-}
-
-InfoMsgMask * Gnss::getCfgInf(Protocol protocolId, Port portId, uint32_t timeout) {
+bool Gnss::getCfgInf(Protocol protocolId) {
   poll(UBX_CFG, CFG_INF, sizeof(uint8_t), (uint8_t *)&protocolId);
-  if (pollNoError(timeout))	return (InfoMsgMask *)&(payload[portId + 4]);
-  return NULL;
+  return cfgInfOk;
 }
 
-bool Gnss::setCfgInf(InfoMsgMask mask, Protocol protocolId, Port portId, uint32_t timeout) {
-  CfgInfo inf;
-  inf.protocolId = protocolId;
-  inf.reserved = 0;
-  inf.reserved2 = 0;
-  for (uint8_t port = DDC; port <= RES; port++) {
-	inf.mask[port].error = 0;
-	inf.mask[port].warning = 0;
-	inf.mask[port].notice = 0;
-	inf.mask[port].test = 0;
-	inf.mask[port].debug = 0;
-  }
-  inf.mask[portId] = mask;
-  poll(UBX_CFG, CFG_INF, sizeof(CfgInfo), (uint8_t *)&inf);
-  if (ackNoError(timeout)) return true;
-  return false;
+bool Gnss::setCfgInf(CfgInfo * cfgInfo, Port portId) {
+	switch (cfgInfo->protocolId) {
+	case UBX:
+		gnssCfgInfo[0].protocolId = cfgInfo->protocolId;
+		gnssCfgInfo[0].reserved = 0;
+		gnssCfgInfo[0].reserved2 = 0;
+		for (int port = 0; port < 6; port++) {
+			gnssCfgInfo[0].mask[port].debug = 0;
+			gnssCfgInfo[0].mask[port].error = 0;
+			gnssCfgInfo[0].mask[port].notice = 0;
+			gnssCfgInfo[0].mask[port].test = 0;
+			gnssCfgInfo[0].mask[port].warning = 0;
+		}
+		gnssCfgInfo[0].mask[portId].debug = cfgInfo->mask[portId].debug;
+		gnssCfgInfo[0].mask[portId].error = cfgInfo->mask[portId].error;
+		gnssCfgInfo[0].mask[portId].notice = cfgInfo->mask[portId].notice;
+		gnssCfgInfo[0].mask[portId].test = cfgInfo->mask[portId].test;
+		gnssCfgInfo[0].mask[portId].warning = cfgInfo->mask[portId].warning;
+		poll(UBX_CFG, CFG_INF, sizeof(CfgInfo), (uint8_t *)&gnssCfgInfo[0]);
+		break;
+	case NMEA:
+		gnssCfgInfo[1].protocolId = cfgInfo->protocolId;
+		gnssCfgInfo[1].reserved = 0;
+		gnssCfgInfo[1].reserved2 = 0;
+		for (int port = 0; port < 6; port++) {
+			gnssCfgInfo[1].mask[port].debug = 0;
+			gnssCfgInfo[1].mask[port].error = 0;
+			gnssCfgInfo[1].mask[port].notice = 0;
+			gnssCfgInfo[1].mask[port].test = 0;
+			gnssCfgInfo[1].mask[port].warning = 0;
+		}
+		gnssCfgInfo[1].mask[portId].debug = cfgInfo->mask[portId].debug;
+		gnssCfgInfo[1].mask[portId].error = cfgInfo->mask[portId].error;
+		gnssCfgInfo[1].mask[portId].notice = cfgInfo->mask[portId].notice;
+		gnssCfgInfo[1].mask[portId].test = cfgInfo->mask[portId].test;
+		gnssCfgInfo[1].mask[portId].warning = cfgInfo->mask[portId].warning;
+		poll(UBX_CFG, CFG_INF, sizeof(CfgInfo), (uint8_t *)&gnssCfgInfo[1]);
+		break;
+	default: printf("setCfgInf(): unknown protocol Id\n");
+	}
+  return cfgInfOk;
 }
 
-char * Gnss::getErrMsg(DebugLevel debugLevel, uint32_t timeout) {
-  poll(UBX_INF, debugLevel);
-  if (pollNoError(timeout))	return (char *)payload;
-  return NULL;
-}
-
-CfgPrt * Gnss::getCfgPrt(Port portId, uint32_t timeout) {
-  poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
-  if (pollNoError(timeout)) {
-	  CfgPrt* p = (CfgPrt*)payload;
-	  switch (p->baudRate) {
-		case BAUD_RATE_4800: baudRate = B4800; break;
-		case BAUD_RATE_9600: baudRate = B9600; break;
-		case BAUD_RATE_19200: baudRate = B19200; break;
-		case BAUD_RATE_38400: baudRate = B38400; break;
-		case BAUD_RATE_57600: baudRate = B57600; break;
-		case BAUD_RATE_115200: baudRate = B115200; break;
-		case BAUD_RATE_230400: baudRate = B230400; break;
-		//case BAUD_RATE_460800: baudRate = B460800; break;
-	  }
-	  return (CfgPrt*)payload;
-  }
-  return NULL;
-}
-
-PowerMode * Gnss::getCfgPms(uint32_t timeout) {
+bool Gnss::getCfgPms() {
   poll(UBX_CFG, CFG_PMS);
-  if (pollNoError(timeout))	return (PowerMode *)payload;
-  return NULL;
+  return cfgPmsOk;
 }
 
-bool Gnss::setCfgPms(PowerModes mode, uint8_t period, uint8_t onTime, uint32_t timeout) {
-  PowerMode * pMode = NULL;
-  poll(UBX_CFG, CFG_PMS);
-  if (pollNoError(timeout)) pMode = (PowerMode *)(payload);
-  else return false;
-
-  if (pMode->powerMode != mode || pMode->period != period || pMode->onTime != onTime) {
-	  if (period > 0 && period <= 5) return false;
-	  if ((period > 5 || onTime > 0) && mode != INTERVAL_POWER_MODE) return false;
-	  pMode->powerMode = mode;
-	  pMode->period = period;
-	  pMode->onTime = onTime;
-	  poll(UBX_CFG, CFG_PMS, sizeof(PowerMode), (uint8_t *)pMode);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+int Gnss::setCfgPms(PowerMode * pm) {
+	//poll(UBX_CFG, CFG_PMS);
+	//if (!cfgPmsOk) return false;
+	//if (powerMode.powerMode != pm->powerMode || powerMode.period != pm->period || powerMode.onTime != pm->onTime) {
+	  if (pm->period > 0 && pm->period <= 5) return EINVAL;
+	  if ((pm->period > 0 || pm->onTime > 0) && pm->powerMode != INTERVAL_POWER_MODE) return EINVAL;
+	  powerMode.powerMode = pm->powerMode;
+	  powerMode.period = pm->period;
+	  powerMode.onTime = pm->onTime;
+	  powerMode.version = 0;
+	  powerMode.reserved = 0;
+	  poll(UBX_CFG, CFG_PMS, sizeof(PowerMode), (uint8_t *)&powerMode);
+  //}
+  return cfgPmsOk ? 0 : -1;
 }
 
-CfgPm * Gnss::getCfgPm(uint32_t timeout) {
+bool Gnss::getCfgPm() {
   poll(UBX_CFG, CFG_PM2);
-  if (pollNoError(timeout))	return (CfgPm *)payload;
-  return NULL;
+  return cfgPmOk;
 }
 
-bool Gnss::setCfgPm(uint8_t maxStartupStateDuration, uint32_t udpatePeriod, uint32_t searchPeriod, uint32_t gridOffset, uint16_t onTime, uint16_t minAcqTime, uint32_t extintInactivity, CfgPmFlags flags, uint32_t timeout) {
-  CfgPm * pMode = NULL;
+bool Gnss::setCfgPm(CfgPm * cfgPm) {
   poll(UBX_CFG, CFG_PM2);
-  if (pollNoError(timeout)) pMode = (CfgPm *)(payload);
-  else return false;
-  pMode->maxStartupStateDuration = maxStartupStateDuration;
-  pMode->updatePeriod = udpatePeriod;
-  pMode->searchPeriod = searchPeriod;
-  pMode->gridOffset = gridOffset;
-  pMode->onTime = onTime;
-  pMode->minAcqTime = minAcqTime;
-  pMode->extintInactivity = extintInactivity;
-  pMode->flags = flags;
-  poll(UBX_CFG, CFG_PM2, sizeof(pMode), (uint8_t *)pMode);
-  if (ackNoError(timeout)) return true;
-  return false;
+  if (!cfgPmOk) return false;
+  gnssCfgPm.maxStartupStateDuration = cfgPm->maxStartupStateDuration;
+  gnssCfgPm.updatePeriod = cfgPm->updatePeriod;
+  gnssCfgPm.searchPeriod = cfgPm->searchPeriod;
+  //gnssCfgPm.gridOffset = cfgPm->gridOffset;
+  gnssCfgPm.onTime = cfgPm->onTime;
+  gnssCfgPm.minAcqTime = cfgPm->minAcqTime;
+  //gnssCfgPm.extintInactivity = cfgPm->extintInactivity;
+  //gnssCfgPm.flags = cfgPm->flags;
+  poll(UBX_CFG, CFG_PM2, sizeof(CfgPm), (uint8_t *)&gnssCfgPm);
+  return cfgPmOk;
 }
 
-CfgRxm * Gnss::getCfgRxm(uint32_t timeout) {
+bool Gnss::getCfgRxm() {
   poll(UBX_CFG, CFG_RXM);
-  if (pollNoError(timeout))	return (CfgRxm *)payload;
-  return NULL;
+  return cfgRxmOk;
 }
 
-bool Gnss::setCfgRxm(CfgRxmLpMode mode, uint32_t timeout) {
-  CfgRxm * pMode = NULL;
+bool Gnss::setCfgRxm(CfgRxmLpMode mode) {
   poll(UBX_CFG, CFG_RXM);
-  if (pollNoError(timeout)) pMode = (CfgRxm *)(payload);
-  else return false;
-  if (pMode->lpMode != mode) {
-	pMode->lpMode = mode;
-	poll(UBX_CFG, CFG_RXM, sizeof(CfgRxm), (uint8_t *)pMode);
-	if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+  if (!cfgRxmOk) return false;
+  if (gnssCfgRxm.lpMode != mode) {
+	gnssCfgRxm.lpMode = mode;
+	poll(UBX_CFG, CFG_RXM, sizeof(CfgRxm), (uint8_t *)&gnssCfgRxm);
+  }
+  return cfgRxmOk;
 }
 
-bool Gnss::setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMask, OutProtoMask outMask, bool extendedTxTimeout, uint32_t timeout) {
-  CfgPrt * prtCfg = NULL;
-  poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
-  if (pollNoError(timeout)) prtCfg = (CfgPrt *)(payload);
-  else return false;
-  //printf("baud rate: %lu\n", rate);
-  prtCfg->baudRate = rate;
-  prtCfg->mode.charLen = mode.charLen;
-  prtCfg->mode.parity = mode.parity;
-  prtCfg->mode.nStopBits = mode.nStopBits;
-  prtCfg->inProtoMask.inUbx = inMask.inUbx;
-  prtCfg->inProtoMask.inNmea = inMask.inNmea;
-  prtCfg->inProtoMask.inRtcm = inMask.inRtcm;
-  prtCfg->outProtoMask.outUbx = outMask.outUbx;
-  prtCfg->outProtoMask.outNmea = outMask.outNmea;
-  prtCfg->flags.extendedTimeout = extendedTxTimeout ? 1 : 0;
-  poll(UBX_CFG, CFG_PRT, sizeof(CfgPrt), (uint8_t *)prtCfg);
-  if (ackNoError(timeout)) return true;
-  return false;
+bool Gnss::getCfgPrt(Port portId) {
+	poll(UBX_CFG, CFG_PRT, sizeof(uint8_t), (uint8_t *)&portId);
+	return cfgPrtOk;
 }
 
-bool Gnss::config(ConfMask mask, ConfigType type, uint32_t timeout) {
+bool Gnss::setCfgPrt(CfgPrt * cfgPrt) {
+  gnssPort.reserved1 = 0;
+  gnssPort.reserved2 = 0;
+  gnssPort.mode.reserved = 0;
+  gnssPort.mode.reserved2 = 0;
+  gnssPort.mode.reserved3 = 0;
+  gnssPort.mode.charLen = cfgPrt->mode.charLen;
+  gnssPort.mode.parity = cfgPrt->mode.parity;
+  gnssPort.mode.nStopBits = cfgPrt->mode.nStopBits;
+  gnssPort.flags.reserved2 = 0;
+  gnssPort.flags.reserved = 0;
+  gnssPort.flags.extendedTimeout = cfgPrt->flags.extendedTimeout;
+  gnssPort.baudRate = cfgPrt->baudRate;
+  gnssPort.inProtoMask.reserved = 0;
+  gnssPort.inProtoMask.inUbx = cfgPrt->inProtoMask.inUbx;
+  gnssPort.inProtoMask.inNmea = cfgPrt->inProtoMask.inNmea;
+  gnssPort.inProtoMask.inRtcm = cfgPrt->inProtoMask.inRtcm;
+  gnssPort.outProtoMask.reserved = 0;
+  gnssPort.outProtoMask.outUbx = cfgPrt->outProtoMask.outUbx;
+  gnssPort.outProtoMask.outNmea = cfgPrt->outProtoMask.outNmea;
+  gnssPort.portId = cfgPrt->portId;
+  gnssPort.txReady.en = cfgPrt->txReady.en;
+  gnssPort.txReady.pin = cfgPrt->txReady.pin;
+  gnssPort.txReady.pol = cfgPrt->txReady.pol;
+  gnssPort.txReady.thres = cfgPrt->txReady.thres;
+  poll(UBX_CFG, CFG_PRT, sizeof(CfgPrt), (uint8_t *)&gnssPort);
+  return cfgPrtOk;
+}
+
+bool Gnss::config(ConfMask mask, ConfigType type) {
   ConfigAllDevs conf;
   switch (type)
   {
@@ -2295,11 +2609,10 @@ bool Gnss::config(ConfMask mask, ConfigType type, uint32_t timeout) {
   	  case LOAD_CONFIG: memset(&(conf.clearMask), 0, sizeof(ConfMask)); memset(&(conf.saveMask), 0, sizeof(ConfMask)); conf.loadMask = mask; break;
   }
   poll(UBX_CFG, CFG_CFG, sizeof(ConfigAllDevs), (uint8_t *)&conf);
-  if (ackNoError(timeout)) return true;
-  return false;
+  return cfgCfgOk;
 }
 
-bool Gnss::config(ConfMask mask, ConfigType type, Device dev, uint32_t timeout) {
+bool Gnss::config(ConfMask mask, ConfigType type, Device dev) {
   ConfigDev conf;
   switch (type)
   {
@@ -2309,11 +2622,10 @@ bool Gnss::config(ConfMask mask, ConfigType type, Device dev, uint32_t timeout) 
   }
   conf.device = dev;
   poll(UBX_CFG, CFG_CFG, sizeof(ConfigDev), (uint8_t *)&conf);
-  if (ackNoError(timeout)) return true;
-  return false;
+  return cfgCfgOk;
 }
 
-bool Gnss::defaultConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf, uint32_t timeout) {
+bool Gnss::defaultConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf) {
   ConfMask conf;
   conf.ioPort = ioPort ? 1 : 0;
   conf.msgConf = msgConf ? 1 : 0;
@@ -2327,13 +2639,10 @@ bool Gnss::defaultConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, b
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
   conf.reserved2 = 0;
-  if (config(conf, DEFAULT_CONFIG, timeout)) {
-	  if (!config(conf, LOAD_CONFIG, timeout)) return false;
-  } else return false;
-  return true;
+  return config(conf, DEFAULT_CONFIG);
 }
 
-bool Gnss::saveConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf, uint32_t timeout) {
+bool Gnss::saveConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf) {
   ConfMask conf;
   conf.ioPort = ioPort ? 1 : 0;
   conf.msgConf = msgConf ? 1 : 0;
@@ -2347,11 +2656,10 @@ bool Gnss::saveConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
   conf.reserved2 = 0;
-  if (!config(conf, SAVE_CONFIG, timeout)) return false;
-  return true;
+  return config(conf, SAVE_CONFIG);
 }
 
-bool Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf, uint32_t timeout) {
+bool Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool rxmConf, bool senConf, bool rinvConf, bool antConf, bool logConf, bool ftsConf) {
   ConfMask conf;
   conf.ioPort = ioPort ? 1 : 0;
   conf.msgConf = msgConf ? 1 : 0;
@@ -2364,197 +2672,182 @@ bool Gnss::loadConfig(bool ioPort, bool msgConf, bool infMsg, bool navConf, bool
   conf.antConf = antConf ? 1 : 0;
   conf.logConf = logConf ? 1 : 0;
   conf.ftsConf = ftsConf ? 1 : 0;
-  conf.reserved2 = 0L;
-  if (!config(conf, LOAD_CONFIG, timeout)) return false;
-  return true;
+  conf.reserved2 = 0;
+  return config(conf, LOAD_CONFIG);
 }
 
-void Gnss::cfgRst(StartType type, ResetMode mode) {
+bool Gnss::cfgRst(StartType type, ResetMode mode) {
 	CfgRst rset;
 	rset.navBbrMask = type.mask;
 	rset.resetMode = mode;
 	poll(UBX_CFG, CFG_RST, sizeof(CfgRst), (uint8_t*)&rset);
+	return cfgRstOk;
 }
 
-void Gnss::stopGnss(StartTypes startType) {
+bool Gnss::stopGnss(StartTypes startType) {
 	StartType type;
 	type.start = startType;
-	cfgRst(type, GNSS_STOP);
+	return cfgRst(type, GNSS_STOP);
 }
 
-void Gnss::startGnss(StartTypes startType) {
+bool Gnss::startGnss(StartTypes startType) {
 	StartType type;
 	type.start = startType;
-	cfgRst(type, GNSS_START);
+	return cfgRst(type, GNSS_START);
 }
 
-void Gnss::resetGnss(StartTypes startType) {
+bool Gnss::resetGnss(StartTypes startType) {
 	StartType type;
 	type.start = startType;
-	cfgRst(type, SOFTWARE_RESET_GNSS_ONLY);
+	return cfgRst(type, SOFTWARE_RESET_GNSS_ONLY);
 }
 
-void Gnss::reset(bool soft, bool afterShutdown, StartTypes startType) {
+bool Gnss::reset(bool soft, bool afterShutdown, StartTypes startType) {
 	StartType type;
 	type.start = startType;
-	if (soft) cfgRst(type, SOFTWARE_RESET);
+	if (soft) return cfgRst(type, SOFTWARE_RESET);
 	else {
-		if (afterShutdown) cfgRst(type, HARDWARE_RESET_AFTER_SHUTDOWN);
-		else cfgRst(type, HARDWARE_RESET);
+		if (afterShutdown) return cfgRst(type, HARDWARE_RESET_AFTER_SHUTDOWN);
+		else return cfgRst(type, HARDWARE_RESET);
 	}
 }
 
-CfgMsg * Gnss::getCfgMsg(uint8_t msgClass, uint8_t msgId, uint32_t timeout) {
-  uint16_t pload = ((uint16_t)(msgId) << 8) | msgClass;
-  poll(UBX_CFG, CFG_MSG, sizeof(uint16_t), (uint8_t *)&pload);
-  if (pollNoError(timeout))	return (CfgMsg *)payload;
-  return NULL;
+bool Gnss::getCfgMsg(uint8_t msgClass, uint8_t msgId) {
+	CfgMsgPoll msgPoll;
+	msgPoll.msgClass = msgClass;
+	msgPoll.msgId = msgId;
+	poll(UBX_CFG, CFG_MSG, sizeof(CfgMsgPoll), (uint8_t *)&msgPoll);
+	return cfgMsgOk;
 }
 
-bool Gnss::setCfgMsg(uint8_t msgClass, uint8_t msgId, uint8_t rate, uint32_t timeout) {
-  CfgMsg * cfgMsg = NULL;
-  uint16_t pload = ((uint16_t)(msgId) << 8) | msgClass;
-  poll(UBX_CFG, CFG_MSG, sizeof(uint16_t), (uint8_t *)&pload);
-  if (pollNoError(timeout))	cfgMsg = (CfgMsg *)payload;
-  else return false;
-
-  if (cfgMsg->rate[COM1] != rate) {
-	  CfgMsgCOM1 cfgMsg2;
-	  cfgMsg2.msgClass = msgClass;
-	  cfgMsg2.msgId = msgId;
-	  cfgMsg2.rate = rate;
-	  poll(UBX_CFG, CFG_MSG, sizeof(CfgMsgCOM1), (uint8_t *)&cfgMsg2);
-	  if (ackNoError(timeout)) return true;
-  } else return true;
-  return false;
+bool Gnss::setCfgMsg(uint8_t msgClass, uint8_t msgId, Port port, uint8_t rate) {
+  CfgMsgPoll msgPoll;
+  msgPoll.msgClass = msgClass;
+  msgPoll.msgId = msgId;
+  poll(UBX_CFG, CFG_MSG, sizeof(CfgMsgPoll), (uint8_t *)&msgPoll);
+  if (!cfgMsgOk) return false;
+  if (gnssCfgMsgs.rate[port] != rate) {
+	  gnssCfgMsg.msgClass = msgClass;
+	  gnssCfgMsg.msgId = msgId;
+	  gnssCfgMsg.rate = rate;
+	  poll(UBX_CFG, CFG_MSG, sizeof(CfgMsg), (uint8_t *)&gnssCfgMsg);
+  }
+  return cfgMsgOk;
 }
 
-ODOCfg * Gnss::getCfgOdo(uint32_t timeout) {
+bool Gnss::getCfgOdo() {
   poll(UBX_CFG, CFG_ODO);
-  if (pollNoError(timeout))	return (ODOCfg *)payload;
-  return NULL;
+  return cfgOdoOk;
 }
 
-bool Gnss::setCfgOdo(OdoFlags flags, OdoProfile profile, uint8_t maxSpeed, uint8_t maxPosAccuracy, uint8_t velGain, uint8_t COGgain, uint32_t timeout) {
-  ODOCfg * odoCfg = NULL;
-  poll(UBX_CFG, CFG_ODO);
-  if (pollNoError(timeout)) odoCfg = (ODOCfg *)(payload);
-  else return false;
-  odoCfg->flags.ODOenabled = flags.ODOenabled;
-  odoCfg->flags.COGenabled = flags.COGenabled;
-  odoCfg->flags.outputLPvelocity = flags.outputLPvelocity;
-  odoCfg->flags.outputLPcog = flags.outputLPcog; 
-  odoCfg->odoProfile = profile; 
-  odoCfg->cogMaxSpeed = maxSpeed; 
-  odoCfg->cogMaxPosAccuracy = maxPosAccuracy;
-  odoCfg->velLPgain = velGain; odoCfg->cogLPgain = COGgain;
-  poll(UBX_CFG, CFG_ODO, sizeof(ODOCfg), (uint8_t *)odoCfg);
-  if (ackNoError(timeout)) return true;
-  return false;
+bool Gnss::setCfgOdo(ODOCfg * odoCfg) {
+  //poll(UBX_CFG, CFG_ODO);
+  //if (!cfgOdoOk) return false;
+  gnssCfgOdo.reserved1 = 0; gnssCfgOdo.reserved2 = 0; gnssCfgOdo.reserved3 = 0;
+  gnssCfgOdo.reserved4 = 0; gnssCfgOdo.reserved5 = 0; gnssCfgOdo.reserved6 = 0;
+  gnssCfgOdo.version = 0;
+  gnssCfgOdo.flags.ODOenabled = odoCfg->flags.ODOenabled;
+  gnssCfgOdo.flags.COGenabled = odoCfg->flags.COGenabled;
+  gnssCfgOdo.flags.outputLPvelocity = odoCfg->flags.outputLPvelocity;
+  gnssCfgOdo.flags.outputLPcog = odoCfg->flags.outputLPcog;
+  gnssCfgOdo.odoProfile = odoCfg->odoProfile;
+  gnssCfgOdo.cogMaxSpeed = odoCfg->cogMaxSpeed;
+  gnssCfgOdo.cogMaxPosAccuracy = odoCfg->cogMaxPosAccuracy;
+  gnssCfgOdo.velLPgain = odoCfg->velLPgain; 
+  gnssCfgOdo.cogLPgain = odoCfg->cogLPgain;
+  poll(UBX_CFG, CFG_ODO, sizeof(ODOCfg), (uint8_t *)&gnssCfgOdo);
+  return cfgOdoOk;
 }
 
-CfgSbas *  Gnss::getCfgSbas(uint32_t timeout) {
+bool Gnss::getCfgSbas() {
   poll(UBX_CFG, CFG_SBAS);
-  if (pollNoError(timeout))	return (CfgSbas *)payload;
-  return NULL;
+  return cfgSbasOk;
 }
 
-bool Gnss::setCfgSbas(CfgSbasUsage usage, uint32_t scanMode1, uint8_t scanMode2, uint32_t timeout) {
-  CfgSbas * cfg = NULL;
+bool Gnss::setCfgSbas(CfgSbas * cfgSbas) {
   poll(UBX_CFG, CFG_SBAS);
-  if (pollNoError(timeout)) cfg = (CfgSbas *)(payload);
-  else return false;
-  cfg->usage = usage;
-  cfg->scanMode1 = scanMode1;
-  cfg->scanMode2 = scanMode2;
-  poll(UBX_CFG, CFG_SBAS, sizeof(CfgSbas), (uint8_t *)cfg);
-  if (ackNoError(timeout)) return true;
-  return false;
+  if (!cfgSbasOk) return false;
+  gnssCfgSbas.usage = cfgSbas->usage;
+  gnssCfgSbas.mode = cfgSbas->mode;
+  //gnssCfgSbas.scanMode1 = cfgSbas->scanMode1;
+  //gnssCfgSbas.scanMode2 = cfgSbas->scanMode2;
+  poll(UBX_CFG, CFG_SBAS, sizeof(CfgSbas), (uint8_t *)&gnssCfgSbas);
+  return cfgSbasOk;
 }
 
-CfgNmea * Gnss::getCfgNmea(uint32_t timeout) {
+bool Gnss::getCfgNmea() {
   poll(UBX_CFG, CFG_NMEA);
-  if (pollNoError(timeout))	return (CfgNmea *)payload;
-  return NULL;
+  return cfgNmeaOk;
 }
 
-bool Gnss::setCfgNmea(CfgNmeaFilter filter, uint8_t nmeaVersion, uint8_t maxSVs, CfgNmeaFlags flags, CfgNmeaGnss gnssFilter, bool displayNonNmeaSVs, CfgNmeaTalkerId mainTalkerId, bool gsvTalkerIdIsMain, char * dbsTalkerId, uint32_t timeout) {
-  CfgNmea * cfg = NULL;
-  poll(UBX_CFG, CFG_NMEA);
-  if (pollNoError(timeout)) cfg = (CfgNmea *)(payload);
-  else return false;
-  cfg->filter = filter;
-  cfg->nmeaVersion = nmeaVersion;
-  cfg->flags = flags;
-  cfg->gnssFilter = gnssFilter;
-  cfg->displayNonNmeaSVs = displayNonNmeaSVs ? 1 : 0;
-  cfg->mainTalkerId = mainTalkerId;
-  cfg->gsvTalkerId = gsvTalkerIdIsMain ? 1 : 0;
-  cfg->dbsTalkerId[0] = dbsTalkerId[0];
-  cfg->dbsTalkerId[1] = dbsTalkerId[1];
-  poll(UBX_CFG, CFG_SBAS, sizeof(CfgNmea), (uint8_t *)cfg);
-  if (ackNoError(timeout)) return true;
-  return false;
+bool Gnss::setCfgNmea(CfgNmea * cfgNmea) {
+  //poll(UBX_CFG, CFG_NMEA);
+  //if (!cfgNmeaOk) return false;
+  gnssCfgNmea.version = 1;
+  gnssCfgNmea.maxSV = cfgNmea->maxSV;
+  gnssCfgNmea.filter = cfgNmea->filter;
+  gnssCfgNmea.filter.reserved = 0;
+  gnssCfgNmea.nmeaVersion = cfgNmea->nmeaVersion;
+  gnssCfgNmea.flags = cfgNmea->flags;
+  gnssCfgNmea.flags.reserved = 0;
+  gnssCfgNmea.gnssFilter = cfgNmea->gnssFilter;
+  gnssCfgNmea.gnssFilter.reserved = 0;
+  gnssCfgNmea.gnssFilter.reserved2 = 0;
+  gnssCfgNmea.displayNonNmeaSVs = cfgNmea->displayNonNmeaSVs;
+  gnssCfgNmea.mainTalkerId = cfgNmea->mainTalkerId;
+  gnssCfgNmea.gsvTalkerId = cfgNmea->gsvTalkerId;
+  gnssCfgNmea.bdsTalkerId[0] = cfgNmea->bdsTalkerId[0];
+  gnssCfgNmea.bdsTalkerId[1] = cfgNmea->bdsTalkerId[1];
+  gnssCfgNmea.reserved = 0;
+  gnssCfgNmea.reserved2 = 0;
+  poll(UBX_CFG, CFG_NMEA, sizeof(CfgNmea), (uint8_t *)&gnssCfgNmea);
+  return cfgNmeaOk;
 }
 
 //LOG messages
-CfgLogFilter * Gnss::getCfgLogFilter(uint32_t timeout) {
+bool Gnss::getCfgLogFilter() {
   poll(UBX_CFG, CFG_LOGFILTER);
-  if (pollNoError(timeout)) {
-	CfgLogFilter * lf = (CfgLogFilter*)payload;
-	loggingEnabled = lf->flags.recordingEnabled;
-	return (CfgLogFilter*)payload;
-  }
-  return NULL;
+  return cfgLogfilterOk;
 }
 
-bool Gnss::setCfgLogFilter(uint8_t minInterval, uint8_t timeThreshold, uint8_t speedThreshold, uint8_t positionThreshold, CfgLogFilterFlags flags, uint32_t timeout) {
-  CfgLogFilter * cfgLogFilter = NULL;
-  poll(UBX_CFG, CFG_LOGFILTER);
-  if (pollNoError(timeout))	cfgLogFilter = (CfgLogFilter*)payload;
-  else return false;
-  cfgLogFilter->minInterval = minInterval;
-  cfgLogFilter->timeThreshold = timeThreshold;
-  cfgLogFilter->speedThreshold = speedThreshold;
-  cfgLogFilter->positionThreshold = positionThreshold;
-  cfgLogFilter->flags = flags;
-  poll(UBX_CFG, CFG_LOGFILTER, sizeof(cfgLogFilter), (uint8_t*)cfgLogFilter);
-  if (ackNoError(timeout)) return true;
-  return false;
+bool Gnss::setCfgLogFilter(CfgLogFilter * cfgLogFilter) {
+  gnssLogFilter.version = 1;
+  gnssLogFilter.minInterval = cfgLogFilter->minInterval;
+  gnssLogFilter.timeThreshold = cfgLogFilter->timeThreshold;
+  gnssLogFilter.speedThreshold = cfgLogFilter->speedThreshold;
+  gnssLogFilter.positionThreshold = cfgLogFilter->positionThreshold;
+  gnssLogFilter.flags = cfgLogFilter->flags;
+  poll(UBX_CFG, CFG_LOGFILTER, sizeof(CfgLogFilter), (uint8_t*)&gnssLogFilter);
+  return cfgLogfilterOk;
 }
 
-bool Gnss::enableLogging(uint8_t interval, uint32_t timeout) {
-	CfgLogFilterFlags flags;
-	flags.recordingEnabled = 1;
-	flags.psmOncePerWakeUpEnabled = 0;
-	flags.applyAllFilterSettings = 1;
-	uint8_t minInterval = 0, timeThreshold = interval, speedThreshold = 0, positionThreshold = 0;
-	if (setCfgLogFilter(minInterval, timeThreshold, speedThreshold, positionThreshold, flags, timeout)) return true;
-	else return false;
+bool Gnss::enableLogging(uint16_t interval) {
+	gnssLogFilter.flags.recordingEnabled = 1;
+	gnssLogFilter.flags.psmOncePerWakeUpEnabled = 0;
+	gnssLogFilter.flags.applyAllFilterSettings = 1;
+	gnssLogFilter.minInterval = 0;
+	gnssLogFilter.positionThreshold = 0;
+	gnssLogFilter.speedThreshold = 0;
+	gnssLogFilter.timeThreshold = interval;
+	return setCfgLogFilter(&gnssLogFilter);
 }
 
-bool Gnss::disableLogging(uint32_t timeout) {
-	CfgLogFilterFlags flags;
-	flags.recordingEnabled = 0;
-	flags.psmOncePerWakeUpEnabled = 0;
-	flags.applyAllFilterSettings = 0;
-	uint8_t minInterval = 0, timeThreshold = 0, speedThreshold = 0, positionThreshold = 0;
-	if (setCfgLogFilter(minInterval, timeThreshold, speedThreshold, positionThreshold, flags, timeout)) return true;
-	else return false;
+bool Gnss::disableLogging() {
+	gnssLogFilter.flags.recordingEnabled = 0;
+	gnssLogFilter.flags.psmOncePerWakeUpEnabled = 0;
+	gnssLogFilter.flags.applyAllFilterSettings = 0;
+	gnssLogFilter.minInterval = 0;
+	gnssLogFilter.positionThreshold = 0;
+	gnssLogFilter.speedThreshold = 0;
+	gnssLogFilter.timeThreshold = 0;
+	return setCfgLogFilter(&gnssLogFilter);
 }
 
-LogInfo * Gnss::getLogInfo(uint32_t timeout) {
+void Gnss::getLogInfo() {
   poll(UBX_LOG, LOG_INFO);
-  if (pollNoError(timeout)) {
-	LogInfo * logInfo = (LogInfo*)payload;
-	loggingEnabled = logInfo->flags.enabled == 1 ? true : false;
-	logFileExists = logInfo->flags.inactive == 1 ? false : true;
-	return logInfo;
-  }
-  return NULL;
 }
 
-bool Gnss::createLog(LogSize logSize, uint32_t userDefinedSize, bool circular, uint32_t timeout) {
+bool Gnss::createLog(LogSize logSize, uint32_t userDefinedSize, bool circular) {
   LogCreate logCreate;
   logCreate.version = 0;
   logCreate.circular = circular ? 1 : 0;
@@ -2562,17 +2855,15 @@ bool Gnss::createLog(LogSize logSize, uint32_t userDefinedSize, bool circular, u
   logCreate.logSize = logSize;
   logCreate.userDefinedSize = userDefinedSize;
   poll(UBX_LOG, LOG_CREATE, sizeof(LogCreate), (uint8_t *)&logCreate);
-  if (ackNoError(timeout)) return true;
-  return false;
+  return logCreateOk;
 }
 
-bool Gnss::eraseLog(uint32_t timeout) {
+bool Gnss::eraseLog() {
   poll(UBX_LOG, LOG_ERASE);
-  if (ackNoError(timeout)) return true;
-  return false;
+  return logEraseOk;
 }
 
-uint32_t Gnss::logFind(DateTime dateTime, uint32_t timeout) {
+uint32_t Gnss::logFind(DateTime dateTime) {
 	LogFindTimeRequest req;
 	LogFindTimeResponse * res = NULL;
 	req.version = 0;
@@ -2581,269 +2872,226 @@ uint32_t Gnss::logFind(DateTime dateTime, uint32_t timeout) {
 	req.dateTime = dateTime;
 	req.reserved2 = 0;
 	poll(UBX_LOG, LOG_FINDTIME, sizeof(LogFindTimeRequest), (uint8_t *)&req);
-	if (pollNoError(timeout)) {
-		res = (LogFindTimeResponse *)payload;
-		return res->index;
-    } else return 0xFFFFFFFF;
+	return logIndex;
 }
 
-bool Gnss::logMsg(const char * msg, uint8_t len, uint32_t timeout) {
+void Gnss::logMsg(const char * msg, uint8_t len) {
   poll(UBX_LOG, LOG_STRING, len, (uint8_t *)msg);
-  if (ackNoError(timeout)) return true;
-  return false;
 }
 
-bool  Gnss::logRetrieve(uint32_t index, uint32_t count) {
+void  Gnss::logRetrieve(uint32_t index, uint32_t count) {
   struct {
 	uint32_t index;
 	uint32_t count; //256 max!
 	uint8_t version;
 	uint16_t reserved;
 	uint8_t reserved2;
-  } msg;
+  }  __attribute__((packed)) msg;
   msg.index = index;
   msg.count = count;
   msg.version = 0;
   msg.reserved = 0;
   msg.reserved2 = 0;
   poll(UBX_LOG, LOG_RETRIEVE, sizeof(msg), (uint8_t *)&msg);
-  //if (ackNoError(timeout)) return true; //ACK-NAK will be sent after the log messages, 
+  //ACK-NAK will be sent after the log messages, 
   //especially NAK is sent when there are more than 256 records to retrieve after first 256 records are sent to indicate that
   //logRetrieve command should be repeated with the new index!
-  return true;
 }
 
-GnssSupport * Gnss::getSupportedGnss(uint32_t timeout) {
+void Gnss::getSupportedGnss() {
   poll(UBX_MON, MON_GNSS);
-  if (pollNoError(timeout))	return (GnssSupport *)payload;
-  return NULL;
 }
 
-GnssConf * Gnss::getGnss(uint32_t timeout) {
+bool Gnss::getGnss() {
   poll(UBX_CFG, CFG_GNSS);
-  if (pollNoError(timeout))	return (GnssConf *)payload;
-  return NULL;
+  return cfgGnssOk;
 }
 
-bool Gnss::setGnss(MajorGnss gnss, bool enableSBAS, bool enableIMES, uint32_t timeout) {
-  GnssConf * gnssConf = NULL;
-  GnssCfg * c = NULL;
+int Gnss::setGnss(MajorGnss gnss, bool enableSBAS, bool enableIMES) {
   poll(UBX_CFG, CFG_GNSS);
-  if (pollNoError(timeout)) {
-	  gnssConf = (GnssConf*)(payload);
-	  for (uint8_t i = 0; i < gnssConf->numConfigBlocks; i++) {
-		  c = (GnssCfg*)(payload + sizeof(GnssConf) + sizeof(GnssCfg) * i);
-		  switch (i) {
-		  case 0: c->flags.enabled = gnss.Gps; break;
-		  case 1: c->flags.enabled = gnss.Gps; break; //QZSS should be enabled or disabled togather with GPS
-		  case 2: c->flags.enabled = gnss.Galileo; break;
-		  case 3: c->flags.enabled = gnss.BeiDou; break;
-		  case 4: c->flags.enabled = gnss.Glonass; break;
-		  case 5: c->flags.enabled = enableSBAS; break;
-		  case 6: c->flags.enabled = enableIMES; break;
-		  }
+  if (!cfgGnssOk) return -1;
+  for (uint8_t i = 0; i < gnssConf.numConfigBlocks; i++) {
+	  switch (configuredGnss[i].gnssId) {
+		  case GPS_ID: configuredGnss[i].flags.enabled = gnss.Gps; break;
+		  case SBAS_ID: configuredGnss[i].flags.enabled = enableSBAS; break; 
+		  case Galileo_ID: configuredGnss[i].flags.enabled = gnss.Galileo; break;
+		  case BeiDou_ID: configuredGnss[i].flags.enabled = gnss.BeiDou; break;
+		  case IMES_ID: configuredGnss[i].flags.enabled = enableIMES; break;
+		  case QZSS_ID: configuredGnss[i].flags.enabled = gnss.Gps; break;//QZSS should be enabled or disabled togather with GPS
+		  case GLONASS_ID: configuredGnss[i].flags.enabled = gnss.Glonass; break;
 	  }
   }
-  else return false;
-  poll(UBX_CFG, CFG_GNSS, sizeof(GnssConf), (uint8_t *)gnssConf);
-  if (ackNoError(timeout)) return true;
-  return false;
+  uint8_t * buf;
+  buf = (uint8_t *)malloc(sizeof(GnssConf) + sizeof(GnssCfg) * gnssConf.numConfigBlocks);
+  if (buf == NULL) { printf("setGnss(): out of memory\n"); return ENOMEM;}
+  memcpy(buf, &gnssConf, sizeof(GnssConf));
+  memcpy(buf + sizeof(GnssConf), &configuredGnss, sizeof(GnssCfg) * gnssConf.numConfigBlocks);
+  poll(UBX_CFG, CFG_GNSS, sizeof(GnssConf) + sizeof(GnssCfg) * gnssConf.numConfigBlocks, (uint8_t *)buf);
+  free(buf);
+  return cfgGnssOk ? 0 : -1;
 }
 
-NavRate * Gnss::getNavRate(uint32_t timeout) {
+bool Gnss::getNavRate() {
   poll(UBX_CFG, CFG_RATE);
-  if (pollNoError(timeout))	return (NavRate *)payload;
-  return NULL;	
+  return cfgRateOk;
 }
 
-bool Gnss::setNavRate(uint16_t measurementRate, uint16_t navSolRate, TimeRef timeRef, uint32_t timeout) {
-  NavRate * rate = NULL;
+bool Gnss::setNavRate(NavRate * navRate) {
   poll(UBX_CFG, CFG_RATE);
-  if (pollNoError(timeout)) rate = (NavRate*)(payload);
-  else return false;
-  rate->rate = measurementRate; //ms
-  rate->navSolRate = navSolRate; //cycles - number of measurements for each NavSol, max 127.
-  rate->timeRef = timeRef; 
-  poll(UBX_CFG, CFG_RATE, sizeof(NavRate), (uint8_t *)rate);
-  if (ackNoError(timeout)) return true;
-  return false;
+  if (!cfgRateOk) return false;
+  gnssNavRate = *((NavRate*)payload);
+  gnssNavRate.rate = navRate->rate; //ms
+  gnssNavRate.navSolRate = navRate->navSolRate; //cycles - number of measurements for each NavSol, max 127.
+  gnssNavRate.timeRef = navRate->timeRef;
+  poll(UBX_CFG, CFG_RATE, sizeof(NavRate), (uint8_t *)&gnssNavRate);
+  return cfgRateOk;
 }
 
-TimePulse * Gnss::getTimePulse(uint32_t timeout) {
+bool Gnss::getTimePulse() {
   poll(UBX_CFG, CFG_TP5);
-  if (pollNoError(timeout))	return (TimePulse *)payload;
-  return NULL;
+  return cfgTpOk;
 }
 
-bool Gnss::setTimePulse(uint32_t pulse_period, uint32_t pulse_len, uint32_t pulse_period_locked, uint32_t pulse_len_locked, int32_t delay, TimePulseFlags flags, uint32_t timeout) {
-  TimePulse * tp = NULL;
+bool Gnss::setTimePulse(TimePulse * tp) {
   poll(UBX_CFG, CFG_TP5);
-  if (pollNoError(timeout)) tp = (TimePulse*)(payload);
-  else return false;
-  tp->pulsePeriod = pulse_period;
-  tp->pulseLen = pulse_len; 
-  tp->pulsePeriodLocked = pulse_period_locked;
-  tp->pulseLenLocked = pulse_len_locked; 
-  tp->userConfigDelay = delay; 
-  tp->flags.active = flags.active;
-  tp->flags.lockGnssFreq = flags.lockGnssFreq;
-  tp->flags.lockedOtherSet = flags.lockedOtherSet;
-  tp->flags.isFreq = flags.isFreq;
-  tp->flags.isLength = flags.isLength;
-  tp->flags.alignToTOW = flags.alignToTOW;
-  tp->flags.gridUtcGnss = flags.gridUtcGnss;
-  tp->flags.syncMode = flags.syncMode;
-  poll(UBX_CFG, CFG_TP5, sizeof(TimePulse), (uint8_t *)tp);
-  if (ackNoError(timeout)) return true;
-  return false;
+  if (!cfgTpOk) return false;
+  gnssTimePulse = *((TimePulse*)payload);
+  gnssTimePulse.pulsePeriod = tp->pulsePeriod;
+  gnssTimePulse.pulseLen = tp->pulseLen; 
+  gnssTimePulse.pulsePeriodLocked = tp->pulsePeriodLocked;
+  gnssTimePulse.pulseLenLocked = tp->pulseLenLocked; 
+  gnssTimePulse.userConfigDelay = tp->userConfigDelay; 
+  gnssTimePulse.flags.active = tp->flags.active;
+  gnssTimePulse.flags.lockGnssFreq = tp->flags.lockGnssFreq;
+  gnssTimePulse.flags.lockedOtherSet = tp->flags.lockedOtherSet;
+  gnssTimePulse.flags.isFreq = tp->flags.isFreq;
+  gnssTimePulse.flags.isLength = tp->flags.isLength;
+  gnssTimePulse.flags.alignToTOW = tp->flags.alignToTOW;
+  gnssTimePulse.flags.gridUtcGnss = tp->flags.gridUtcGnss;
+  gnssTimePulse.flags.syncMode = tp->flags.syncMode;
+  poll(UBX_CFG, CFG_TP5, sizeof(TimePulse), (uint8_t *)&gnssTimePulse);
+  return cfgTpOk;
 }
 
-NavPvt * Gnss::getNavPvt(uint32_t timeout) {
+void Gnss::getNavPvt() {
   poll(UBX_NAV, NAV_PVT);
-  if (pollNoError(timeout))	return (NavPvt *)payload;
-  return NULL;
 }
 
-NavSat * Gnss::getNavSat(uint32_t timeout) {
+void Gnss::getNavSat() {
   poll(UBX_NAV, NAV_SAT);
-  if (pollNoError(timeout))	return (NavSat *)payload;
-  return NULL;
 }
 
-NavTimeUtc * Gnss::getNavTimeUtc(uint32_t timeout) {
+void Gnss::getNavTimeUtc() {
   poll(UBX_NAV, NAV_TIMEUTC);
-  if (pollNoError(timeout))	return (NavTimeUtc *)payload;
-  return NULL;
 }
 
-NavClock * Gnss::getNavClock(uint32_t timeout) {
+void Gnss::getNavClock() {
   poll(UBX_NAV, NAV_CLOCK);
-  if (pollNoError(timeout))	return (NavClock *)payload;
-  return NULL;
 }
 
-NavDGPS * Gnss::getNavDgps(uint32_t timeout) {
+void Gnss::getNavDgps() {
   poll(UBX_NAV, NAV_DGPS);
-  if (pollNoError(timeout))	return (NavDGPS *)payload;
-  return NULL;
 }
 
-NavDOP * Gnss::getNavDop(uint32_t timeout) {
+void Gnss::getNavDop() {
   poll(UBX_NAV, NAV_DOP);
-  if (pollNoError(timeout))	return (NavDOP *)payload;
-  return NULL;
 }
 
-NavGeofence * Gnss::getNavGeofence(uint32_t timeout) {
+void Gnss::getNavGeofence() {
   poll(UBX_NAV, NAV_GEOFENCE);
-  if (pollNoError(timeout))	return (NavGeofence *)payload;
-  return NULL;  
 }
 
-GeoFences * Gnss::getCfgGeofences(uint32_t timeout) {
+bool Gnss::getCfgGeofences() {
   poll(UBX_CFG, CFG_GEOFENCE);
-  if (pollNoError(timeout))	return (GeoFences *)payload;
-  return NULL;
+  return cfgGeofenceOk;
 }
 
-bool Gnss::setCfgGeofence(GeoFence * geofence, uint8_t confidenceLevel, uint32_t timeout) {
-  GeoFences * fences = NULL;
+bool Gnss::setCfgGeofence(GeoFence * geofence, uint8_t confidenceLevel) {
   poll(UBX_CFG, CFG_GEOFENCE);
-  if (pollNoError(timeout))	fences = (GeoFences *)payload; else return false;
+  if (!cfgGeofenceOk) return false;
   CfgGeofences cfgFences;
-  cfgFences.geoFences.version = fences->version;
+  cfgFences.geoFences.version = gnssGeoFences.version;
   cfgFences.geoFences.numFences = 1;
   cfgFences.geoFences.confidenceLevel = confidenceLevel;
-  cfgFences.geoFences.reserved = fences->reserved;
-  cfgFences.geoFences.pioEnabled = fences->pioEnabled;
-  cfgFences.geoFences.pinPolarity = fences->pinPolarity;
-  cfgFences.geoFences.pin = fences->pin;
-  cfgFences.geoFences.reserved2 = fences->reserved2;
+  cfgFences.geoFences.reserved = gnssGeoFences.reserved;//0x20
+  cfgFences.geoFences.pioEnabled = gnssGeoFences.pioEnabled;//0
+  cfgFences.geoFences.pinPolarity = gnssGeoFences.pinPolarity;//0
+  cfgFences.geoFences.pin = gnssGeoFences.pin;//0
+  cfgFences.geoFences.reserved2 = gnssGeoFences.reserved2;//0x20
   cfgFences.geoFence.lat = geofence->lat;
   cfgFences.geoFence.lon = geofence->lon;
   cfgFences.geoFence.radius = geofence->radius;
-
   poll(UBX_CFG, CFG_GEOFENCE, sizeof(CfgGeofences), (uint8_t *)&cfgFences);
-  if (ackNoError(timeout)) return true;
-  return false;
+  return cfgGeofenceOk;
 }
 
-NavODO * Gnss::getNavOdo(uint32_t timeout) {
+void Gnss::getNavOdo() {
   poll(UBX_NAV, NAV_ODO);
-  if (pollNoError(timeout))	return (NavODO *)payload;
-  return NULL;  
 }
 
-bool Gnss::resetOdo(uint32_t timeout) {
+bool Gnss::resetOdo() {
   poll(UBX_NAV, NAV_RESETODO);
-  if (ackNoError(timeout))	return true;
-  return false;  
+  return resetOdoOk;
 }
 
-NavOrb * Gnss::getNavOrb(uint32_t timeout) {
+void Gnss::getNavOrb() {
   poll(UBX_NAV, NAV_ORB);
-  if (pollNoError(timeout))	return (NavOrb *)payload;
-  return NULL;  
 }
 
-NavPosLlh * Gnss::getNavPosLlh(uint32_t timeout) {
+void Gnss::getNavPosEcef() {
+	poll(UBX_NAV, NAV_POSECEF);
+}
+
+void Gnss::getNavPosLlh() {
   poll(UBX_NAV, NAV_POSLLH);
-  if (pollNoError(timeout))	return (NavPosLlh *)payload;
-  return NULL; 
 }
 
-NavSbas * Gnss::getNavSbas(uint32_t timeout) {
+void Gnss::getNavSbas() {
   poll(UBX_NAV, NAV_SBAS);
-  if (pollNoError(timeout))	return (NavSbas *)payload;
-  return NULL; 
 }
 
-NavSlas * Gnss::getNavSlas(uint32_t timeout) {
+void Gnss::getNavSlas() {
   poll(UBX_NAV, NAV_SLAS);
-  if (pollNoError(timeout))	return (NavSlas *)payload;
-  return NULL; 
 }
 
-NavTimeBdsGal * Gnss::getNavTimeBds(uint32_t timeout) {
+void Gnss::getNavTimeBds() {
   poll(UBX_NAV, NAV_TIMEBDS);
-  if (pollNoError(timeout))	return (NavTimeBdsGal *)payload;
-  return NULL;
 }
 
-NavTimeBdsGal * Gnss::getNavTimeGal(uint32_t timeout) {
+void Gnss::getNavTimeGal() {
   poll(UBX_NAV, NAV_TIMEGAL);
-  if (pollNoError(timeout))	return (NavTimeBdsGal *)payload;
-  return NULL;
 }
 
-NavTimeGps * Gnss::getNavTimeGps(uint32_t timeout) {
+void Gnss::getNavTimeGps() {
   poll(UBX_NAV, NAV_TIMEGPS);
-  if (pollNoError(timeout))	return (NavTimeGps *)payload;
-  return NULL;
 }
 
-NavTimeGlo * Gnss::getNavTimeGlo(uint32_t timeout) {
+void Gnss::getNavTimeGlo() {
   poll(UBX_NAV, NAV_TIMEGLO);
-  if (pollNoError(timeout))	return (NavTimeGlo *)payload;
-  return NULL;
 }
 
-NavTimeLs * Gnss::getNavTimeLs(uint32_t timeout) {
+void Gnss::getNavTimeLs() {
   poll(UBX_NAV, NAV_TIMELS);
-  if (pollNoError(timeout))	return (NavTimeLs *)payload;
-  return NULL;
 }
 
-TimTm * Gnss::getTimTm(uint32_t timeout) {
+void Gnss::getTimTm() {
   poll(UBX_TIM, TIM_TM2);
-  if (pollNoError(timeout))	return (TimTm *)payload;
-  return NULL;
 }
 
-TimeTP * Gnss::getTimeTp(uint32_t timeout) {
+void Gnss::getTimTp() {
   poll(UBX_TIM, TIM_TP);
-  if (pollNoError(timeout))	return (TimeTP *)payload;
-  return NULL;
+}
+
+void Gnss::getNavStatus() {
+	poll(UBX_NAV, NAV_STATUS);
+}
+
+void Gnss::getNavVelEcef() {
+	poll(UBX_NAV, NAV_VELECEF);
+}
+
+void Gnss::getNavVelNed() {
+	poll(UBX_NAV, NAV_VELNED);
 }
 
 //NMEA messages
@@ -3324,7 +3572,7 @@ void Gnss::getPubxTime(PubxTime * data) {
 					data->leapSec = stoi(leapSec, nullptr, 10);
 				} else data->leapSec = stoi(leapSec, nullptr, 10); break;
 			case 7: data->clkBias = stoi(tim[i], nullptr, 10); break;
-			case 8: data->clkDrift = stoi(tim[i], nullptr, 10); break;
+			case 8: data->clkDrift = stof(tim[i], nullptr); break;
 			case 9: data->tpGran = stoi(tim[i], nullptr, 10); break;
 		}		
 	}
@@ -3366,6 +3614,9 @@ void nmeaLonToDMS(Longitude * longitude, string lon, char EW) {
 
 void longLatToDMS(Latitude * latitude, int32_t lat) {
       uint32_t l;
+	  const uint32_t l1 = 10000000;
+	  const uint32_t l2 = 1000000;
+	  const double l3 = 100000;
 	  if (lat < 0) {
 		latitude->NS = 'S';
 		l = -lat;
@@ -3375,21 +3626,28 @@ void longLatToDMS(Latitude * latitude, int32_t lat) {
 		latitude->NS = 'N';      
 		l = lat;
 	  }
-   	  latitude->deg = l / 10000000L;
-      l %= 10000000L;
-      latitude->min = l * 6 / 1000000L;
-      latitude->sec = l * 36.0 / 100000.0 - latitude->min * 60.0;
+   	  latitude->deg = l / l1;
+      l %= l1;
+      latitude->min = l * 6 / l2;
+      latitude->sec = l * 36.0 / l3 - latitude->min * 60.0;
 }
 
 int32_t dmsToLongLat(Latitude * latitude) {
-      int32_t lat = latitude->deg * 10000000L + latitude->min * 1000000L / 6 + latitude->sec * 100000.0 / 36.0;
-	  if (latitude->NS == 'S') lat = -lat;
-	  return lat;
+	const uint32_t l1 = 10000000;
+	const uint32_t l2 = 1000000;
+	const double l3 = 100000;
+
+	int32_t lat = latitude->deg * l1 + latitude->min * l2 / 6 + latitude->sec * l3 / 36.0;	  
+	if (latitude->NS == 'S') lat = -lat;
+	return lat;
 }
 
 void longLonToDMS(Longitude * longitude, int32_t lon) {
       uint32_t l;
-      if (lon < 0) {
+	  const uint32_t l1 = 10000000;
+	  const uint32_t l2 = 1000000;
+	  const double l3 = 100000;
+	  if (lon < 0) {
 		longitude->EW = 'W';
 		l = -lon;
 	  }
@@ -3398,14 +3656,17 @@ void longLonToDMS(Longitude * longitude, int32_t lon) {
 		longitude->EW = 'E';      
 		l = lon;
 	  }
-	  longitude->deg = l / 10000000L;
-      l %= 10000000L;
-      longitude->min = l * 6 / 1000000L;
-      longitude->sec = l * 36.0 / 100000.0 - longitude->min * 60.0;
+	  longitude->deg = l / l1;
+      l %= l1;
+      longitude->min = l * 6 / l2;
+      longitude->sec = l * 36.0 / l3 - longitude->min * 60.0;
 }
 
 int32_t dmsToLongLon(Longitude * longitude) {
-      int32_t lon = longitude->deg * 10000000L + longitude->min * 1000000L / 6 + longitude->sec * 100000.0 / 36.0;
+      const uint32_t l1 = 10000000;
+	  const uint32_t l2 = 1000000;
+	  const double l3 = 100000;
+	  int32_t lon = longitude->deg * l1 + longitude->min * l2 / 6 + longitude->sec * l3 / 36.0;
 	  if (longitude->EW == 'W') lon = -lon;
 	  return lon;
 }
@@ -3448,4 +3709,27 @@ tm * gps2tm(DateTime * dt, tm * time_tm) {
 	time_tm->tm_min = dt->minute;
 	time_tm->tm_sec = dt->second;
 	return time_tm;
+}
+
+char * humanTime(uint32_t time, char * htime) {
+	if (htime) {
+		uint16_t days = time / 86400;
+		uint8_t hours = (time % 86400) / 3600;
+		uint8_t minutes = (time % 3600) / 60;
+		uint8_t seconds = time % 60;
+		if (days) sprintf(htime, "%u days %u hours %u minutes %u seconds", days, hours, minutes, seconds);
+		else if (hours) sprintf(htime, "%u hours %u minutes %u seconds", hours, minutes, seconds);
+		else if (minutes) sprintf(htime, "%u minutes %u seconds", minutes, seconds);
+		else if (seconds) sprintf(htime, "%u seconds", seconds);
+		return htime;
+	}
+	else return NULL;
+}
+
+void delay(int sec) {
+	time_t t = time(NULL);	
+	while (time(NULL) - t < sec) {
+		sleep(sec);
+		continue;
+	}
 }

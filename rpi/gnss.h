@@ -10,29 +10,19 @@
 #include <ctime>
 #include <sys/time.h>
 #include <cctype>
-
-
+ 
 using namespace std;
 
-#ifdef ONE_HOUR
-#undef ONE_HOUR
-#endif
-#define ONE_HOUR 3600L //it is preferred to use const like
-//const long one_hour = 3600;
-
-#ifdef ONE_DAY
-#undef ONE_DAY
-#endif
-#define ONE_DAY 86400L
-
-#ifdef UNIX_OFFSET
-#undef UNIX_OFFSET
-#endif
-#define UNIX_OFFSET 946684800L
-#define GPS_UNIX_DIFF 315964800L
-#define GPS_OFFSET 630720000L // = UNIX_OFFSET - 315964800 (DIFF BETWEEN GPS and UNIX timestamps)
-
-const uint32_t maxWait = 3;
+const uint32_t GPS_OFFSET = 630720000; // = UNIX_OFFSET - 315964800 (DIFF BETWEEN GPS and UNIX timestamps)
+const uint32_t GPS_UNIX_DIFF = 315964800;
+//const uint32_t UNIX_OFFSET = 946684800;
+const uint32_t ONE_DAY = 86400;
+//const uint32_t ONE_HOUR = 3600; //it is preferred to use const like
+int defaultDelay = 1;
+bool DEBUG_UBX = false, DEBUG_NMEA = false;
+const uint16_t maxNumberOfPatches = 10;
+const uint8_t maxNumberOfGnss = 7;
+const uint8_t maxNumberOfGeoFences = 4;
 
 const uint8_t SYNC_CHARS[] = {0xB5, 0x62};
 const char NMEA_START = '$', NMEA_END = '*';
@@ -96,11 +86,15 @@ enum DebugLevel : uint8_t {
 #define MON_PATCH 0x27
 #define MON_GNSS 0x28 
 
+#define NAV_POSECEF 1
 #define NAV_POSLLH 2
+#define NAV_STATUS 3
 #define NAV_DOP 4
 #define NAV_PVT 7
 #define NAV_ODO 9
 #define NAV_RESETODO 0x10
+#define NAV_VELECEF 0x11
+#define NAV_VELNED 0x12
 #define NAV_TIMEGPS 0x20
 #define NAV_TIMEUTC 0x21
 #define NAV_CLOCK 0x22
@@ -108,6 +102,7 @@ enum DebugLevel : uint8_t {
 #define NAV_TIMEBDS 0x24
 #define NAV_TIMEGAL 0x25
 #define NAV_TIMELS 0x26
+#define NAV_SVINFO 0x30
 #define NAV_DGPS 0x31
 #define NAV_SBAS 0x32
 #define NAV_ORB 0x34
@@ -171,20 +166,21 @@ enum Port : uint8_t {
 
 enum Protocol : uint8_t {
 	UBX,
-	NMEA
+	NMEA,
+	PROTOCOL_NONE = 255
 };
 
 struct UbxAck {
 	uint8_t classId;
 	uint8_t messageId;
-};
+} __attribute__((packed));
 
 struct ValidTime {
 	uint8_t validDate : 1;
 	uint8_t validTime : 1;
 	uint8_t fullyResolved : 1;
 	uint8_t validMag : 1;
-};
+} __attribute__((packed));
 
 enum UtcSource : uint8_t {
 	NO_INFO,
@@ -204,13 +200,13 @@ struct ValidUtc {
 	uint8_t validUTC : 1;
 	uint8_t reserved : 1;
 	uint8_t utcSource : 4; //enum UtcSource
-};
+} __attribute__((packed));
 
 struct Time {
 	uint8_t hour; //0..23
 	uint8_t minute; //0..59
 	uint8_t second; //0..60
-};
+} __attribute__((packed));
 
 struct DateTime {
 	uint16_t year;
@@ -219,7 +215,7 @@ struct DateTime {
 	uint8_t hour; //0..23
 	uint8_t minute; //0..59
 	uint8_t second; //0..60
-}; //7 bytes
+} __attribute__((packed)); //7 bytes
 
 struct NavTimeUtc {
 	uint32_t iTOW;
@@ -227,7 +223,7 @@ struct NavTimeUtc {
 	int32_t nano;
 	DateTime dateTime;
 	ValidUtc valid;
-}; //20 bytes
+} __attribute__((packed)); //20 bytes
 
 enum FixType : uint8_t {
 	NONE,
@@ -236,6 +232,16 @@ enum FixType : uint8_t {
 	THREE_D,
 	GNSS_DR,
 	TIME_ONLY
+};
+
+enum GnssId : uint8_t {
+	GPS_ID,
+	SBAS_ID,
+	Galileo_ID,
+	BeiDou_ID,
+	IMES_ID,
+	QZSS_ID,
+	GLONASS_ID
 };
 
 enum PsmState : uint8_t {
@@ -259,7 +265,7 @@ struct PvtFlags {
 	uint8_t psmState : 3;
 	uint8_t headingValid : 1;
 	uint8_t carrSoln : 2;
-};
+} __attribute__((packed));
 
 //these flags should be ignored in protocol version <= 18
 struct PvtFlags2 {
@@ -267,7 +273,7 @@ struct PvtFlags2 {
 	uint8_t confirmedAvai : 1; //only supported in protocol version >= 19
 	uint8_t confirmedDate : 1; //only valid if confirmedAvai is set
 	uint8_t confirmedTime : 1; //only valid if confirmedAvai is set
-};
+} __attribute__((packed));
 
 struct SatInfoFlags {
 	uint32_t signalQuality : 3;
@@ -289,17 +295,17 @@ struct SatInfoFlags {
 	uint32_t crCorrUsed : 1;
 	uint32_t doCorrUsed : 1;
 	uint32_t reserved3 : 9;
-};
+} __attribute__((packed));
 
 struct SatInfo {
-  uint8_t gnssId;
+  GnssId gnssId;
   uint8_t svId;
   uint8_t cno;
   int8_t elev;
   int16_t azim;
   int16_t prRes;
   SatInfoFlags flags;
-};
+} __attribute__((packed));
 
 struct NavSat {
 	uint32_t iTOW;
@@ -307,13 +313,86 @@ struct NavSat {
 	uint8_t numSvs;
 	uint16_t reserved;
 //	SatInfo * satInfo; //repeated structure x numSvs
-};
+} __attribute__((packed));
+
+struct NavStatusFlags {
+	uint8_t gpsFixOk : 1; //1 = position and velocity valid and within DOP and ACC Masks.
+	uint8_t diffSoln : 1; //1 = differential corrections were applied
+	uint8_t wknSet : 1; //1 = Week Number valid (see Time Validity section for details)
+	uint8_t towSet : 1; //1 = Time of Week valid (see Time Validity section for details)
+	uint8_t reserved : 4;
+} __attribute__((packed));
+
+struct NavStatusFixFlags {
+	uint8_t diffCorr : 1; //1 = differential corrections available
+	uint8_t carrSolnValid : 1; //1 = valid carrSoln
+	uint8_t reserved : 4;
+	uint8_t mapMatching : 2; //map matching status:
+						//00: none
+		//01 : valid but not used, i.e.map matching data was received, but was too old
+		//10 : valid and used, map matching data was applied
+		//11 : valid and used, map matching data was applied. In case of sensor unavailability map matching
+		//data enables dead reckoning. This requires map matched latitude / longitude or heading data.
+} __attribute__((packed));
+
+struct NavStatusFlags2 {
+	uint8_t psmState : 2; //power save mode state
+				  //0: ACQUISITION[or when psm disabled]
+				  //1 : TRACKING
+				  //2 : POWER OPTIMIZED TRACKING
+				  //3 : INACTIVE
+	uint8_t reserved : 1;
+	uint8_t spoofDetState : 2; //Spoofing detection state (not supported in protocol versions less than 18)
+							   //0: Unknown or deactivated
+							   //1 : No spoofing indicated
+							   //2 : Spoofing indicated
+							   //3 : Multiple spoofing indications
+	//Note that the spoofing state value only reflects the dector state for the current navigation epoch. As
+	//spoofing can be detected most easily at the transition from real signal to spoofing signal, this is also
+	//where the detector is triggered the most, i.e. a value of 1 - No spoofing indicated does not mean that
+	//the receiver is not spoofed, it simply states that the detector was not triggered in this epoch.
+	uint8_t reserved2 : 1;
+	uint8_t carrSoln : 2; // see CarrierSolution enum: Carrier phase range solution status:
+						  //0: no carrier phase range solution
+						  //1 : carrier phase range solution with floating ambiguities
+						  //2 : carrier phase range solution with fixed ambiguities
+} __attribute__((packed));
+
+struct NavStatus {
+	uint32_t iTOW;
+	FixType gpsFix;
+	NavStatusFlags flags;
+	NavStatusFixFlags fixFlags;
+	NavStatusFlags2 flags2;
+	uint32_t timeToFix; //ms, Time to first fix (millisecond time tag)
+	uint32_t uptime; //ms, Milliseconds since Startup / Reset
+} __attribute__((packed));
+
+struct NavVelEcef {
+	uint32_t iTOW;
+	int32_t velX; //cm/s, X velocity component
+	int32_t velY; //cm/s, Y velocity component
+	int32_t velZ; //cm/s, Z velocity component
+	uint32_t sAcc; //cm/s, Speed accuracy estimate
+} __attribute__((packed));
+
+struct NavVelNed {
+	uint32_t iTOW;
+	int32_t velNorth; //cm/s, North velocity component
+	int32_t velEast; //cm/s, East velocity component
+	int32_t velDown; //cm/s, Down velocity component
+	uint32_t speed; //cm/s, Speed (3-D)
+	uint32_t groundSpeed; //cm/s, Ground speed (2-D)
+	int32_t heading; //deg * 10^-5, Heading of motion 2-D
+	uint32_t sAcc; //cm/s, Speed accuracy Estimate
+	uint32_t cAcc; //deg * 10^-5, Course / Heading accuracy estimate
+} __attribute__((packed));
 
 struct MonVer {
 	char swVersion[30];
 	char hwVersion[10];
 	char extensions[MON_VER_EXTENSION_NUMBER][30];
-};
+} __attribute__((packed));
 
 enum SignalQuality : uint8_t {
 	NO_SIGNAL,
@@ -373,7 +452,7 @@ struct NavPvt
 	int32_t heading; //10^-5 deg
 	int16_t magDec; //10^-2 deg
 	uint16_t magDecAcc; //10^-2 deg
-}; //92 bytes
+} __attribute__((packed)); //92 bytes
 
 enum DynModel : uint8_t {
 	PORTABLE,
@@ -416,23 +495,7 @@ struct CfgNavMask {
 	uint16_t reserved : 1;
 	uint16_t utcMask : 1;
 	uint16_t unused : 5;
-};
-
-struct InfoMsgMask {
-	uint8_t error : 1;
-	uint8_t warning : 1;
-	uint8_t notice : 1;
-	uint8_t test : 1;
-	uint8_t debug : 1;
-	uint8_t reserved : 3;
-};
-
-struct CfgInfo {
-	uint8_t protocolId;
-	uint16_t reserved;
-	uint8_t reserved2;
-	InfoMsgMask mask[6];
-};
+} __attribute__((packed));
 
 struct CfgNav {
 	CfgNavMask mask;	
@@ -445,7 +508,7 @@ struct CfgNav {
 	uint16_t pDOP; //10^-1
 	uint16_t tDOP; //10^-1
 	uint16_t pAcc; //m
-	uint16_t tAcc; //ns or us?
+	uint16_t tAcc; //ns or us or ms?
 	uint8_t staticHoldThreshold; //cm/s - the speed, below which the static mode is activated
 	uint8_t dgnssTimeout; //s
 	uint8_t cnoThresholdNumSVs; //Number of satellites required to have cno above cnoThreshold for a fix to be attempted
@@ -455,48 +518,65 @@ struct CfgNav {
 	UtcStandard utcStandard;
 	uint32_t reserved2;
 	uint8_t reserved3;
-};//36 bytes
+} __attribute__((packed));//36 bytes
+
+struct InfoMsgMask {
+	uint8_t error : 1;
+	uint8_t warning : 1;
+	uint8_t notice : 1;
+	uint8_t test : 1;
+	uint8_t debug : 1;
+	uint8_t reserved : 3;
+} __attribute__((packed));
+
+struct CfgInfo {
+	uint8_t protocolId;
+	uint16_t reserved;
+	uint8_t reserved2;
+	InfoMsgMask mask[6];
+} __attribute__((packed));
 
 struct FixedAlt {
 	int32_t fixedAlt; //m for 2D mode
 	uint32_t fixedAltVar; //m^2 for 2D mode
-};
+} __attribute__((packed));
 
 struct DOP {
 	uint16_t pDOP;
 	uint16_t tDOP;
-};
+} __attribute__((packed));
 
 struct Accuracy {
 	uint16_t pAcc; //m
 	uint16_t tAcc; //ns or us?
-};
+} __attribute__((packed));
 
 struct CnoThreshold {
 	uint8_t cnoThreshold; //dBHz
 	uint8_t cnoThresholdNumSVs; //Number of satellites required to have cno above cnoThresh for a fix to be attempted
-};
+} __attribute__((packed));
 
 struct StaticHoldThresholds {
 	uint8_t staticHoldThreshold; //cm/s - the speed, below which the static mode is activated
 	uint16_t staticHoldMaxDistance; //m - if this distance exceeded, the static mode gets deactivated
-};
+} __attribute__((packed));
 
 struct CfgLogFilterFlags {
 	uint8_t recordingEnabled : 1;
 	uint8_t psmOncePerWakeUpEnabled : 1; //enable recording only one single position per PSM on/off mode wake-up period
 	uint8_t applyAllFilterSettings : 1;
-};
+	uint8_t reserved : 5;
+} __attribute__((packed));
 
 struct CfgLogFilter {
-	uint8_t version;
+	uint8_t version; //0x1
 	CfgLogFilterFlags flags;
 	uint16_t minInterval; //s, 0 - not set (ignored). This is only applied in combination with the speed and/or position thresholds. 
 						  //If both minInterval and timeThreshold are set, minInterval must be less than or equal to timeThreshold.
 	uint16_t timeThreshold; //s, 0 - not set (ignored)
 	uint16_t speedThreshold; //m/s, 0 - not set (ignored)
-	uint16_t positionThreshold; //m, 0 - not set (ignored)
-};
+	uint32_t positionThreshold; //m, 0 - not set (ignored)
+} __attribute__((packed));
 
 enum LogSize : uint8_t {
 	SAFE_SIZE,
@@ -505,7 +585,7 @@ enum LogSize : uint8_t {
 };
 
 struct LogCreate {
-	uint8_t version;
+	uint8_t version; //0
 	uint8_t circular; // 1 - circular, 0 - not
 	uint8_t reserved;
 	LogSize logSize; //0 (maximum safe size): Ensures that logging will not be interrupted and enough space will be left
@@ -513,7 +593,7 @@ struct LogCreate {
 					 //1 (minimum size): 
 					 //2 (user defined): See 'userDefinedSize' below
 	uint32_t userDefinedSize; //bytes
-};
+} __attribute__((packed));
 
 struct LogFindTimeRequest {
 	uint8_t version; // 0
@@ -521,14 +601,14 @@ struct LogFindTimeRequest {
 	uint16_t reserved;
 	DateTime dateTime;
 	uint8_t reserved2;
-};
+} __attribute__((packed));
 
 struct LogFindTimeResponse {
 	uint8_t version; // 1
 	uint8_t type; // 1 - for response
 	uint16_t reserved;
 	uint32_t index; //0-based index, If 0xFFFFFFFF, no log entry found with time <= given time
-};
+} __attribute__((packed));
 
 struct LogInfoFlags {
 	uint8_t reserved : 3;
@@ -536,7 +616,7 @@ struct LogInfoFlags {
 	uint8_t inactive : 1;
 	uint8_t circular : 1;
 	uint8_t reserved2 : 2;
-};
+} __attribute__((packed));
 
 struct LogInfo {
 	uint8_t version; //1
@@ -555,7 +635,7 @@ struct LogInfo {
 	LogInfoFlags flags;
 	uint16_t reserved7;
 	uint8_t reserved8;
-};
+} __attribute__((packed));
 
 struct LogRetrievePos {
 	uint32_t index;
@@ -571,7 +651,7 @@ struct LogRetrievePos {
 	uint8_t reserved;
 	uint8_t numSV;
 	uint8_t reserved2;
-}; //40 bytes
+} __attribute__((packed)); //40 bytes
 
 struct LogRetrievePosExtra {
 	uint32_t index;
@@ -584,9 +664,9 @@ struct LogRetrievePosExtra {
 	uint32_t reserved4;
 	uint32_t reserved5;
 	uint32_t reserved6;
-}; // 32 bytes
+} __attribute__((packed)); // 32 bytes
 
-struct LogRetrievestring {
+struct LogRetrieveString {
 	uint32_t index;
 	uint8_t version; //0
 	uint8_t reserved;
@@ -594,14 +674,14 @@ struct LogRetrievestring {
 	uint8_t reserved2;
 	uint16_t byteCount; // < 256
 	//uint8_t * bytes; 
-}; //16 bytes
+} __attribute__((packed)); //16 bytes
 
 struct TxReady {
 	uint16_t en : 1;
 	uint16_t pol : 1;
 	uint16_t pin : 5;
 	uint16_t thres : 9;
-};
+} __attribute__((packed));
 
 enum BaudRate : uint32_t {
 	BAUD_RATE_4800 = 4800,
@@ -620,19 +700,19 @@ struct InProtoMask {
 	uint16_t inNmea : 1;
 	uint16_t inRtcm : 1;
 	uint16_t reserved : 13;
-};
+} __attribute__((packed));
 
 struct OutProtoMask {
 	uint16_t outUbx : 1;
 	uint16_t outNmea : 1;
 	uint16_t reserved : 14;
-};
+} __attribute__((packed));
 
 struct PrtFlags {
-	uint16_t reserverd : 1;
+	uint16_t reserved : 1;
 	uint16_t extendedTimeout : 1;
 	uint16_t reserved2 : 14;
-};
+} __attribute__((packed));
 
 enum CharLen : uint8_t {
 	FIVE_BIT,
@@ -662,7 +742,7 @@ struct PrtMode {
 	uint32_t parity : 3;
 	uint32_t nStopBits : 2;
 	uint32_t reserved3 : 18;
-};
+} __attribute__((packed));
 
 struct CfgPrt {
 	Port portId;
@@ -674,7 +754,7 @@ struct CfgPrt {
 	OutProtoMask outProtoMask;
 	PrtFlags flags;
 	uint16_t reserved2;
-};
+} __attribute__((packed));
 
 enum Error : uint8_t {
 	NO_ERROR,
@@ -696,7 +776,7 @@ struct ConfMask {
 	uint32_t logConf : 1; //Logging configuration
 	uint32_t ftsConf : 1; //FTS configuration. Only applicable to the FTS product variant.
 	uint32_t reserved2 : 19; //must be set to 0!
-};
+} __attribute__((packed));
 
 struct Device {
 	uint8_t devBBR : 1; //Battery backed RAM
@@ -705,20 +785,20 @@ struct Device {
 	uint8_t reserved : 1;
 	uint8_t devSpiFlash : 1; //SPI Flash
 	uint8_t reserved2 : 3;
-};
+} __attribute__((packed));
 
 struct ConfigAllDevs {
 	ConfMask clearMask;
 	ConfMask saveMask;
 	ConfMask loadMask;
-};
+} __attribute__((packed));
 
 struct ConfigDev {
 	ConfMask clearMask;
 	ConfMask saveMask;
 	ConfMask loadMask;
 	Device device;
-};
+} __attribute__((packed));
 
 enum ConfigType : uint8_t {
 	DEFAULT_CONFIG,
@@ -726,18 +806,23 @@ enum ConfigType : uint8_t {
 	LOAD_CONFIG
 };
 
-struct CfgMsg {
+struct CfgMsgs {
 	uint8_t msgClass;
 	uint8_t msgId;
 	uint8_t rate[6]; //array index is Port enum (see above)
-};
+} __attribute__((packed));
 
-struct CfgMsgCOM1 {
+struct CfgMsg {
 	uint8_t msgClass;
 	uint8_t msgId;
 	uint8_t rate; //sets rate for the current port (COM1)
-};
+} __attribute__((packed));
  
+struct CfgMsgPoll {
+	uint8_t msgClass;
+	uint8_t msgId;
+} __attribute__((packed));
+
  enum PowerModes : uint8_t {
 	FULL_POWER_MODE = 0,
 	BALANCED_POWER_MODE,
@@ -754,7 +839,7 @@ struct PowerMode {
 	uint16_t period; // must be > 5s, recommeded min 10s - only for INTERVAL_POWER_MODE, otherwise must be 0!
 	uint16_t onTime; // must be smaller period
 	uint16_t reserved;
-};
+} __attribute__((packed));
 
 enum OdoProfile : uint8_t {
 	RUNNING,
@@ -769,7 +854,7 @@ struct OdoFlags {
 	uint8_t COGenabled : 1; //low speed COG filter
 	uint8_t outputLPvelocity : 1; //output low pass filtered velocity for speed < 5m/s;
 	uint8_t outputLPcog : 1; //output low pass filtered heading, aka 2D heading of motion in UBX-NAV-PVT for speed < 8m/s
-};
+} __attribute__((packed));
 
 struct ODOCfg {
 	uint8_t version;
@@ -777,15 +862,15 @@ struct ODOCfg {
 	uint8_t reserved2;
 	OdoFlags flags;
 	OdoProfile odoProfile;
-	uint32_t reserverd3;
-	uint16_t reserverd4;
+	uint32_t reserved3;
+	uint16_t reserved4;
 	uint8_t cogMaxSpeed; //m/s
 	uint8_t cogMaxPosAccuracy; //m
 	uint16_t reserved5;
 	uint8_t velLPgain; //velocity low pass filter levels for speed < 5m/s; 0..255 where 0 is heavy filtering and 255 - weak
 	uint8_t cogLPgain; //COG low pass filter levels at speed < 8m/s: 0..255
 	uint16_t reserved6;
-}; //20 bytes
+} __attribute__((packed)); //20 bytes
 
 struct GnssFlags {
 	uint32_t enabled : 1;
@@ -798,17 +883,7 @@ struct GnssFlags {
 							 //When gnssId is 5 (QZSS): 0x01 = QZSS L1C/A, 0x04 = QZSS L1S, 0x10 = QZSS L2C
 							 //When gnssId is 6 (GLONASS): 0x01 = GLONASS L1, 0x10 = GLONASS L2
 	uint32_t reserved2 : 8;
-};
-
-enum GnssId : uint8_t {
-	GPS_ID,
-	SBAS_ID,
-	Galileo_ID,
-	BeiDou_ID,
-	IMES_ID,
-	QZSS_ID,
-	GLONASS_ID
-};
+} __attribute__((packed));
 
 struct GnssCfg {
 	GnssId gnssId;
@@ -816,7 +891,7 @@ struct GnssCfg {
 	uint8_t maxTrkCh;
 	uint8_t reserved;
 	GnssFlags flags;
-};
+} __attribute__((packed));
 
 struct GnssConf {
 	uint8_t version;//0
@@ -824,14 +899,14 @@ struct GnssConf {
 	uint8_t numTrkChUse;
 	uint8_t numConfigBlocks;
 	//followed by repeated blocks of GnssCfg (times numConfigBlocks)
-};
+} __attribute__((packed));
 
 struct MajorGnss {
 	uint8_t Gps : 1;
 	uint8_t Glonass : 1;
 	uint8_t BeiDou : 1;
 	uint8_t Galileo : 1;
-};
+} __attribute__((packed));
 
 struct GnssSupport {
 	uint8_t version; //1
@@ -841,7 +916,7 @@ struct GnssSupport {
 	uint8_t simultaneous;
 	uint16_t reserved;
 	uint8_t reserved2;
-};
+} __attribute__((packed));
 
 enum TimeRef : uint16_t {
 	UTC_TIME,
@@ -862,7 +937,7 @@ struct NavRate {
 	uint16_t rate; //ms - measurement rate (time between measurements: 1000ms = 1Hz)
 	uint16_t navSolRate; //cycles - ratio: number of measurements to number of navigation solutions: max 127
 	TimeRef timeRef;
-};
+} __attribute__((packed));
 
 struct TimePulseFlags {
 	uint32_t active : 1;
@@ -878,7 +953,7 @@ struct TimePulseFlags {
 							  //or match it with relevant UTC variant if it is set to GNSS time
 	uint32_t syncMode : 3; //only relevant for FTS chips
 	uint32_t reserved : 18;
-};
+} __attribute__((packed));
 
 struct TimePulse {
 	uint8_t pulseId;
@@ -892,7 +967,7 @@ struct TimePulse {
 	uint32_t pulseLenLocked; //us or 2^-32 - pulse length or duty cycles when locked to GPS time, only used when lockedOtherSet is set
 	int32_t userConfigDelay; //ns - user-configurable time pulse delay. If they don't match the time error can be as much as 100s ns
 	TimePulseFlags flags;
-}; //32 bytes
+} __attribute__((packed)); //32 bytes
 
 //Receiver Autonomous Integrity Monitoring Algorithm (RAIM)
 enum RAIM : uint8_t {
@@ -910,12 +985,12 @@ struct TimeBaseFlags {
 	uint8_t utcBase : 1; // TimeBase enum
 	uint8_t utc : 1; //UTC available if true
 	uint8_t raim : 2; // RAIM enum - Receiver Autonomous Integrity Monitoring Algorithm (RAIM)
-};
+} __attribute__((packed));
 
 struct TimeRefInfo {
 	uint8_t timeRefGnss : 4; //TimeRefGnss enum, only valid when timeBase is GNSS (not UTC!)
 	uint8_t utcSource : 4; //UtcSource enum, only valid when timeBase is UTC (not GNSS!)
-};
+} __attribute__((packed));
 
 struct TimeTP {
 	uint32_t tow; //ms
@@ -924,7 +999,7 @@ struct TimeTP {
 	uint16_t weeks; //weeks since 6 Jan 1980
 	TimeBaseFlags timeBase;
 	TimeRefInfo timeRef;
-};
+} __attribute__((packed));
 
 struct Latitude {
 	uint8_t deg;
@@ -1134,8 +1209,8 @@ struct PubxTime {
 	uint32_t utcWeek;
 	uint8_t leapSec; //s
 	char leapSecSrc; //D - firmware, S - satellite
-	uint32_t clkBias; //ns, Receiver clock bias
-	uint32_t clkDrift; //ns/s, Receiver clock drift
+	int32_t clkBias; //ns, Receiver clock bias
+	float clkDrift; //ns/s, Receiver clock drift
 	uint32_t tpGran; //ns, Time Pulse Granularity, The quantization error of the TIMEPULSE pin
 };
 
@@ -1163,7 +1238,7 @@ struct NavClock {
 	int32_t clkD; //gnss chip clock drift, ns/s
 	uint32_t tAcc; //gnss chip time accuracy, ns
 	uint32_t fAcc; //gnss chip frequency accuracy, ps/s
-};
+} __attribute__((packed));
 
 struct NavDGPS {
 	uint32_t iTOW;
@@ -1174,13 +1249,13 @@ struct NavDGPS {
 	uint8_t status; //0x00: none, 0x01: PR+PRR correction
 	uint16_t reserved;
 	//repeated (numCh times) block of DGPSCorrData
-};
+} __attribute__((packed));
 
 struct DGPSCorrDataFlags {
 	uint8_t channel : 4; //channels greater than 15 are displayed as 15
 	uint8_t used : 1;
 	uint8_t reserved : 3;
-};
+} __attribute__((packed));
 
 struct DGPSCorrData {
 	uint8_t svid;
@@ -1188,7 +1263,7 @@ struct DGPSCorrData {
 	uint16_t ageC; //ms
 	float prc; //Pseudorange correction, m
 	float prrc; //Pseudorange rate correction, m/s
-};
+} __attribute__((packed));
 
 struct NavDOP {
 	uint32_t iTOW;
@@ -1199,7 +1274,7 @@ struct NavDOP {
 	uint16_t hDOP; //horizontal DOP
 	uint16_t nDOP; //northing DOP
 	uint16_t eDOP; //easting DOP
-};
+} __attribute__((packed));
 
 enum GeofenceState : uint8_t {
 	UKNOWN_GEOFENCE_STATE,
@@ -1214,7 +1289,7 @@ struct NavGeofence {
 	uint8_t numFences; //number of fences
 	GeofenceState combState; //combined state
 	//followed by repeated block (times numFences) of GeofenceState enum + uint8_t reserved byte
-};
+} __attribute__((packed));
 
 struct NavODO {
 	uint8_t version;//0
@@ -1224,7 +1299,7 @@ struct NavODO {
 	uint32_t distance; //ground distance since last reset, m
 	uint32_t totalDistance; //total ground distance, m
 	uint32_t distanceStd; //m - ground distance accuracy (1-sigma)
-};
+} __attribute__((packed));
 
 struct GeoFences {
 	uint8_t version; //0
@@ -1237,18 +1312,18 @@ struct GeoFences {
 	uint8_t pin; //PIO pin number
 	uint8_t reserved2;
 	//followed by repeated block of GeoFence (times numFences)
-};
+} __attribute__((packed));
 
 struct GeoFence {
 	int32_t lat; //deg x 10^-7
 	int32_t lon; //deg x 10^-7
 	uint32_t radius; //cm
-};
+} __attribute__((packed));
 
 struct CfgGeofences {
 	GeoFences geoFences;
 	GeoFence geoFence;
-};
+} __attribute__((packed));
 
 struct CfgNmeaFilter {
 	uint8_t failedFix : 1; //Enable position output for failed or invalid fixes
@@ -1258,7 +1333,7 @@ struct CfgNmeaFilter {
 	uint8_t gpsOnly : 1; //Restrict output to GPS satellites only
 	uint8_t invalidCog : 1; //Enable COG output even if COG is frozen
 	uint8_t reserved : 2;
-};
+} __attribute__((packed));
 
 struct CfgNmeaFlags {
 	uint8_t compat : 1; //enable compatibility mode. 
@@ -1270,7 +1345,7 @@ struct CfgNmeaFlags {
 							   //This flag cannot be set in conjunction with either Compatibility Mode or Limit82 Mode.
 							   //(not supported in protocol versions less than 20.01)
 	uint8_t reserved : 4;
-};
+} __attribute__((packed));
 
 struct CfgNmeaGnss {
 	uint32_t disableGps : 1;
@@ -1280,7 +1355,7 @@ struct CfgNmeaGnss {
 	uint32_t disableGlonass : 1;
 	uint32_t disableBeidou : 1;
 	uint32_t reserved2 : 25;
-};
+} __attribute__((packed));
 
 enum CfgNmeaTalkerId : uint8_t {
 	DEFAULT_TALKER_ID, //Uses GNSS assignment of the receiver's channels (see UBX-CFG-GNSS)
@@ -1303,11 +1378,11 @@ struct CfgNmea {
 	CfgNmeaTalkerId mainTalkerId;
 	uint8_t gsvTalkerId; //0 - Use GNSS specific Talker ID (as defined by NMEA), 1 - Use the main Talker ID
 	uint8_t version; //1
-	char dbsTalkerId[3]; //Sets the two characters that should be used for the BeiDou Talker ID
+	char bdsTalkerId[2]; //Sets the two characters that should be used for the BeiDou Talker ID
 						 //If these are set to zero, the default BeiDou TalkerId will be used
 	uint32_t reserved;
 	uint16_t reserved2;
-};
+} __attribute__((packed));
 
 enum Visibility : uint8_t {
 	UNKNOWN_VISIBILITY,
@@ -1320,7 +1395,7 @@ struct SvFlags {
 	uint8_t health : 2; // HEALTHY enum
 	uint8_t visibility : 2; // Visibility enum
 	uint8_t reserved : 4;
-};
+} __attribute__((packed));
 
 struct OrbFlags {
 	uint8_t Usability : 5; //31 - usability period is unknown, 
@@ -1328,16 +1403,16 @@ struct OrbFlags {
 							 //30 > n > 0 - between (n - 1)*15 and n*15, 
 							 //0 - cannot be used
 	uint8_t Source : 3; //0 - N/A, 1 - gnss (assist now offline for otherFlags), 2 - external aiding (assist now automomous for otherFlags), 3-7 - other 
-};
+} __attribute__((packed));
 
 struct OrbData {
-	uint8_t gnssId;
+	GnssId gnssId;
 	uint8_t svId;
 	SvFlags svFlags;
 	OrbFlags ephFlags;
 	OrbFlags almFlags;
 	OrbFlags otherFlags;
-};
+} __attribute__((packed));
 
 struct NavOrb {
 	uint32_t iTOW;
@@ -1345,7 +1420,15 @@ struct NavOrb {
 	uint8_t numSv;
 	uint16_t reserved;
 	//followed by repeated block of OrbData (x numSv)
-};
+} __attribute__((packed));
+
+struct NavPosEcef {
+	uint32_t iTOW; //ms
+	int32_t x; //cm
+	int32_t y; //cm
+	int32_t z; //cm
+	uint32_t pAcc; //cm
+} __attribute__((packed));
 
 struct NavPosLlh {
 	uint32_t iTOW;
@@ -1355,7 +1438,7 @@ struct NavPosLlh {
 	int32_t altMSL;
 	uint32_t hAcc;
 	uint32_t vAcc;
-};
+} __attribute__((packed));
 
 struct SbasServices {
 	uint8_t ranging : 1;
@@ -1363,14 +1446,15 @@ struct SbasServices {
 	uint8_t integrity : 1;
 	uint8_t testMode : 1;
 	uint8_t reserved : 4;
-};
+} __attribute__((packed));
 
-enum SbasSystems : uint8_t {
+enum SbasSystems : int8_t {
 	WAAS,
 	EGNOS,
 	MSAS,
 	GAGAN,
-	GPS_SYS = 16
+	GPS_SYS = 16,
+	UNKNOWN_SBAS = -1
 };
 
 struct SbasSv {
@@ -1383,7 +1467,7 @@ struct SbasSv {
 	int16_t prc; //pseudo range correction in cm
 	uint16_t reserved2;
 	int16_t ic; //ionospheric correction in cm
-};
+} __attribute__((packed));
 
 struct NavSbas {
 	uint32_t iTOW;
@@ -1395,20 +1479,20 @@ struct NavSbas {
 	uint16_t reserved;
 	uint8_t reserved2;
 	//repeated blocks of SbasSv (x cnt)
-};
+} __attribute__((packed));
 
 struct NavSlasFlags {
 	uint8_t gmsAvailable : 1; //ground station available
 	uint8_t qzssSvAvailable : 1; //SV available
 	uint8_t testMode : 1;
-};
+} __attribute__((packed));
 
 struct SlasSv {
-	uint8_t gnssId;
+	GnssId gnssId;
 	uint8_t svId;
 	uint32_t reserved;
 	int16_t prc; //pseudo range correction in cm
-};
+} __attribute__((packed));
 
 struct NavSlas {
 	uint32_t iTOW;
@@ -1420,14 +1504,14 @@ struct NavSlas {
 	NavSlasFlags flags;
 	uint8_t cnt; //number of repeated blocks
 	//repeated SlasSv blocks (x cnt)
-};
+} __attribute__((packed));
 
 struct TimeFlags {
 	uint8_t towValid : 1;
 	uint8_t weekValid : 1;
 	uint8_t leapSecValid : 1;
 	uint8_t reserved : 5;
-};
+} __attribute__((packed));
 
 struct NavTimeBdsGal {
 	uint32_t iTOW; //ms, GPS time of the week
@@ -1437,7 +1521,7 @@ struct NavTimeBdsGal {
 	int8_t leapSec; //s, leap seconds
 	TimeFlags flags;
 	uint32_t tAcc; //ns
-};
+} __attribute__((packed));
 
 struct NavTimeGps {
 	uint32_t iTOW; //ms, GPS time of the week
@@ -1446,13 +1530,13 @@ struct NavTimeGps {
 	int8_t leapSec; //s, leap seconds
 	TimeFlags flags;
 	uint32_t tAcc; //ns
-};
+} __attribute__((packed));
 
 struct TimeGloFlags {
 	uint8_t todValid : 1; //both tod and fTod are valid
 	uint8_t dateValid : 1; //both days and year are valid
 	uint8_t reserved : 6;
-};
+} __attribute__((packed));
 
 struct NavTimeGlo {
 	uint32_t iTOW; //ms, GPS time of the week
@@ -1463,7 +1547,7 @@ struct NavTimeGlo {
 	uint8_t year;//1=1996, 2=2000, 3=2004, etc
 	TimeGloFlags flags;
 	uint32_t tAcc; //ns
-};
+} __attribute__((packed));
 
 enum TimeLsSource : uint8_t {
 	DEFAULT_LSS,
@@ -1489,7 +1573,7 @@ enum TimeLsChangeSource : uint8_t {
 struct NavTimeLsFlags {
 	uint8_t validCurrLs : 1;
 	uint8_t validTimeToLs : 1;
-};
+} __attribute__((packed));
 
 struct NavTimeLs {
 	uint32_t iTOW;
@@ -1514,7 +1598,7 @@ struct NavTimeLs {
 	uint16_t reserved3;
 	uint8_t reserved4;
 	NavTimeLsFlags flags;
-};
+} __attribute__((packed));
 
 struct CfgPmFlags {
 	uint32_t reserved : 4;
@@ -1535,7 +1619,7 @@ struct CfgPmFlags {
 								//1 - receiver does not enter (Inactive) Awaiting Next Search state but keeps trying to acquire a fix instead
 	uint32_t mode : 2; //Mode of operation: 00 ON/OFF operation (PSMOO), 01 - Cyclic tracking operation (PSMCT), 10 - reserved, 11 - reserved
 	uint32_t reserved3 : 13;
-};
+} __attribute__((packed));
 
 struct CfgPm {
 	uint8_t version;//2
@@ -1550,7 +1634,7 @@ struct CfgPm {
 	uint16_t minAcqTime; //s, minimal search time
 	uint32_t reserved3[5];
 	uint32_t extintInactivity; //ms, inactivity time out on EXTINT pin if enabled
-};
+} __attribute__((packed));
 
 enum CfgRxmLpMode : uint8_t {
 	CONTINUOUS_POWER,
@@ -1561,19 +1645,19 @@ enum CfgRxmLpMode : uint8_t {
 struct CfgRxm {
 	uint8_t reserved;
 	CfgRxmLpMode lpMode;
-};
+} __attribute__((packed));
 
 struct CfgSbasMode {
 	uint8_t enabled : 1; //SBAS Enabled (1) / Disabled (0) - This field is deprecated; use UBX-CFG-GNSS to enable/disable SBAS operation
 	uint8_t testMode : 1; //SBAS Testbed: Use data anyhow (1) / Ignore data when in Test Mode (SBAS Msg 0)
 	uint8_t reserved : 6;
-};
+} __attribute__((packed));
 
 struct CfgSbasUsage {
 	uint8_t range : 1; //Use SBAS GEOs as a ranging source (for navigation)
 	uint8_t diffCorr : 1; //Use SBAS Differential Corrections
 	uint8_t integrity : 6; //Use SBAS Integrity Information
-};
+} __attribute__((packed));
 
 struct CfgSbas {
 	CfgSbasMode mode;
@@ -1583,7 +1667,7 @@ struct CfgSbas {
 	uint8_t scanMode2; //Continuation of scanMode1 bitmask below
 	uint32_t scanMode1; //Which SBAS PRN numbers to search for (Bitmask) If all Bits are set to zero, auto-scan (i.e. all valid
 						//PRNs) are searched. Every bit corresponds to a PRN number from PRN120 (bit0) to PRN158 (bit6 in scanMode2)
-};
+} __attribute__((packed));
 
 enum PatchLocation : uint8_t {
 	EFUSE,
@@ -1596,20 +1680,20 @@ struct PatchInfo {
 	uint32_t activated : 1;
 	uint32_t location : 2; //Indicates where the patch is stored. 0: eFuse, 1: ROM, 2: BBR, 3: file system.
 	uint32_t reserved : 29;
-};
+} __attribute__((packed));
 
 struct Patch {
 	PatchInfo patchInfo;
 	uint32_t comparatorNumber;
 	uint32_t patchAddress;
 	uint32_t patchData;
-};
+} __attribute__((packed));
 
 struct MonPatches {
 	uint16_t version;//1
 	uint16_t numPatches;
 	//repeated block of Patch (x numPatches)
-};
+} __attribute__((packed));
 
 struct TimTmFlags {
 	uint8_t mode : 1; //0 - single, 1 - running
@@ -1621,7 +1705,7 @@ struct TimTmFlags {
 	uint8_t utcAvailable : 1;
 	uint8_t timeValid : 1;
 	uint8_t newRisingEdge : 1; //new rising edge detected
-};
+} __attribute__((packed));
 
 struct TimTm {
 	uint8_t channel; //Channel (i.e. EXTINT) upon which the pulse was measured
@@ -1634,7 +1718,7 @@ struct TimTm {
 	uint32_t towFalling;
 	uint32_t towSubFalling;
 	uint32_t accEst;
-};
+} __attribute__((packed));
 
 //On chip BBR(battery backed RAM) sections to clear. The following Special Sets apply:
 //0x0000 Hot start
@@ -1652,7 +1736,7 @@ struct NavBbrMask {
 	uint16_t rtc : 1; //RTC
 	uint16_t reserved : 6;
 	uint16_t aop : 1; //Autonomous Orbit Parameters
-};
+} __attribute__((packed));
 
 enum StartTypes : uint16_t {
 	HOT_START,
@@ -1678,23 +1762,75 @@ struct CfgRst {
 	NavBbrMask navBbrMask;
 	ResetMode resetMode;
 	uint8_t reserved;
+} __attribute__((packed));
+
+struct Checksum {
+	uint8_t checksum0;
+	uint8_t checksum1;
 };
 
 class Gnss {
 public:
   int fd;
-  uint8_t checksum[2], messageClass, pollMessageClass, messageId, pollMessageId, * payload, * pollPayload;
-  uint16_t offset, payloadLength, pollPayloadLength;
-  uint32_t iTOW; //set when UBX-NAV-EOE marker is received (end of Nav Epoch - after all NAV and NMEA enabled messages)
+  char * device;
+  int pipefds[2];
+  uint8_t messageClass, pollMessageClass, messageId, pollMessageId, numberOfGeoFences, * buffer, * payload, * pollPayload;
+  uint16_t offset, payloadLength, pollPayloadLength, numberOfPatches;
+  uint32_t iTOW, logIndex; //set when UBX-NAV-EOE marker is received (end of Nav Epoch - after all NAV and NMEA enabled messages)
 				 //endOfNavEpoch field is set to true at this time. It is reset on the next UBX message
   Error error;
-  bool nmea, nmeaChecksumNext, nmeaValid, endOfNavEpoch, loggingEnabled, logFileExists;
-  volatile bool pps, ttp;
-  string nmeaPayload, nmeaChecksum, nmeaDate;
+  bool nmea, nmeaChecksumNext, nmeaValid, endOfNavEpoch, isReady;
+  bool cfgGnssOk, cfgInfOk, cfgLogfilterOk, cfgMsgOk, cfgNavOk, cfgOdoOk, cfgPmOk, cfgPmsOk, cfgPrtOk, cfgRateOk, cfgRxmOk, cfgSbasOk, cfgSlasOk, cfgTpOk, cfgNmeaOk, cfgGeofenceOk, cfgRstOk, cfgCfgOk, logCreateOk, logEraseOk, resetOdoOk;
+  string nmeaBuffer, nmeaPayload, nmeaChecksum, nmeaDate;
   time_t utcTime;
-  speed_t baudRate;
+  UbxAck ubxAck, ubxNak;
+  MonVer gnssMonVer;
+  CfgPrt gnssPort;
+  CfgNav gnssNav;
+  CfgRxm gnssCfgRxm;
+  CfgSbas gnssCfgSbas;
+  CfgNmea gnssCfgNmea;
+  CfgLogFilter gnssLogFilter;
+  CfgMsgs gnssCfgMsgs;
+  CfgMsg gnssCfgMsg;
+  CfgPm gnssCfgPm;
+  CfgInfo gnssCfgInfo[2];
+  ODOCfg gnssCfgOdo;
+  GnssCfg configuredGnss[maxNumberOfGnss];
+  GnssConf gnssConf;
+  NavRate gnssNavRate;
+  TimTm gnssTimTm;
+  TimeTP gnssTimeTp;
+  TimePulse gnssTp;
+  GeoFences gnssGeoFences;
+  GeoFence gnssGeoFence[maxNumberOfGeoFences];
+  Patch patches[maxNumberOfPatches];
+  LogInfo gnssLogInfo;
+  LogRetrievePos gnssLogPos;
+  LogRetrievePosExtra gnssLogOdo;
+  LogRetrieveString gnssLogString;
+  GnssSupport supportedGnss;
+  TimePulse gnssTimePulse;
+  NavPvt gnssNavPvt;
+  //NavSat gnssNavSat;
+  NavTimeUtc gnssNavTimeUtc;
+  NavClock gnssNavClock;
+  //NavDGPS gnssNavDgps;
+  NavDOP gnssNavDop;
+  NavGeofence gnssNavGeoFence;
+  //NavOrb gnssNavOrb;
+  NavODO gnssOdo;
+  NavPosEcef gnssNavPosEcef;
+  NavPosLlh gnssNavPosLlh;
+  NavTimeBdsGal gnssNavTimeBdsGal;
+  NavTimeGps gnssNavTimeGps;
+  NavTimeGlo gnssNavTimeGlo;
+  NavTimeLs gnssNavTimeLs;
+  NavStatus gnssStatus;
+  NavVelEcef gnssVelEcef;
+  NavVelNed gnssVelNed;
+  PowerMode powerMode;
   Gnss();
-  void tp();
   int begin(const char* dev, speed_t baudRate);
   void end();
   bool ready();
@@ -1705,6 +1841,7 @@ public:
   void navGeoFence();
   void navOdo();
   void navOrb();
+  void navPosEcef();
   void navPosLlh();
   void navPvt();
   void navSat();
@@ -1716,6 +1853,9 @@ public:
   void navTimeGps();
   void navTimeLs();
   void navTimeUtc();
+  void navStatus();
+  void navVelEcef();
+  void navVelNed();
   void cfgGnss();
   void cfgInf();
   void cfgLogFilter();
@@ -1763,103 +1903,107 @@ public:
   void pubxSvStatus();
   void pubxTime();
   void poll(uint8_t msgClass, uint8_t msgId, uint16_t payload_length = 0, uint8_t * pload = NULL);
-  MonVer * getVersion(uint32_t timeout = maxWait); //UBX-MON-VER
-  MonPatches * getPatches(uint32_t timeout = maxWait); //UBX-MON-PATCH
+  void getVersion(); //UBX-MON-VER
+  uint16_t getPatches(); //UBX-MON-PATCH
   //UBX-CFG-NAV5 settings
-  CfgNav * getCfgNav(uint32_t timeout = maxWait);
-  DynModel getDynamicModel(uint32_t timeout = maxWait);
-  bool setDynamicModel(DynModel model, uint32_t timeout = maxWait);
-  UtcStandard getUtcStandard(uint32_t timeout = maxWait);
-  bool setUtcStandard(UtcStandard standard, uint32_t timeout = maxWait);
-  FixMode getFixMode(uint32_t timeout = maxWait);
-  bool setFixMode(FixMode fixMode, uint32_t timeout = maxWait);
-  FixedAlt * getFixedAlt(FixedAlt * fixedAlt, uint32_t timeout = maxWait);
-  bool setFixedAlt(int32_t fixedAlt, uint32_t fixedAltVar, uint32_t timeout = maxWait);
-  DOP * getDop(DOP * dop, uint32_t timeout = maxWait);
-  bool setDop(uint16_t posDOP, uint16_t timeDOP, uint32_t timeout = maxWait);
-  Accuracy * getAccuracy(Accuracy * acc, uint32_t timeout = maxWait);
-  bool setAccuracy(uint16_t posAccuracy, uint16_t timeAccuracy, uint32_t timeout = maxWait);
-  CnoThreshold * getCnoThreshold(CnoThreshold * cno, uint32_t timeout = maxWait);
-  bool setCnoThreshold(uint8_t cnoThreshold, uint8_t cnoThresholdNumSVs, uint32_t timeout = maxWait);
-  StaticHoldThresholds * getStaticHoldThresholds(StaticHoldThresholds * thresholds, uint32_t timeout = maxWait);
-  bool setStaticHoldThresholds(uint8_t staticHoldThreshold, uint8_t staticHoldMaxDistance, uint32_t timeout = maxWait);
-  int8_t getMinElev(uint32_t timeout = maxWait);
-  bool setMinElev(int8_t minElev, uint32_t timeout = maxWait);
-  int8_t getDgnssTimeout(uint32_t timeout = maxWait);
-  bool setDgnssTimeout(int8_t dgnssTimeout, uint32_t timeout = maxWait);
+  bool getCfgNav();
+  DynModel getDynamicModel();
+  bool setDynamicModel(DynModel model);
+  UtcStandard getUtcStandard();
+  bool setUtcStandard(UtcStandard standard);
+  FixMode getFixMode();
+  bool setFixMode(FixMode fixMode);
+  bool getFixedAlt(FixedAlt * fixedAlt);
+  bool setFixedAlt(FixedAlt * fixedAlt);
+  bool getDop(DOP * dop);
+  bool setDop(DOP * dop);
+  bool getAccuracy(Accuracy * acc);
+  bool setAccuracy(Accuracy * acc);
+  bool getCnoThreshold(CnoThreshold * cno);
+  bool setCnoThreshold(CnoThreshold * cno);
+  bool getStaticHoldThresholds(StaticHoldThresholds * thresholds);
+  bool setStaticHoldThresholds(StaticHoldThresholds * thresholds);
+  int8_t getMinElev();
+  bool setMinElev(int8_t minElev);
+  uint8_t getDgnssTimeout();
+  bool setDgnssTimeout(int8_t dgnssTimeout);
   //End of UBX-CFG-NAV5 settings
-  InfoMsgMask * getCfgInf(Protocol protocolId, Port portId = COM1, uint32_t timeout = maxWait); //UBX-CFG-INF
-  bool setCfgInf(InfoMsgMask mask, Protocol protocolId, Port portId = COM1, uint32_t timeout = maxWait); //UBX-CFG-INF
-  char * getErrMsg(DebugLevel debugLevel, uint32_t timeout = maxWait); //UBX-INF-* debug messages
-  CfgPrt * getCfgPrt(Port portId = COM1, uint32_t timeout = maxWait); //UBX-CFG-PRT
-  bool setCfgPrt(Port portId, BaudRate rate, PrtMode mode, InProtoMask inMask, OutProtoMask outMask, bool extendedTxTimeout = false, uint32_t timeout = maxWait); //UBX-CFG-PRT
-  bool config(ConfMask mask, ConfigType type, uint32_t timeout = maxWait); //UBX-CFG-CFG
-  bool config(ConfMask mask, ConfigType type, Device dev, uint32_t timeout = maxWait); //UBX-CFG-CFG
-  bool defaultConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
-  bool saveConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
-  bool loadConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true, uint32_t timeout = maxWait);
-  void cfgRst(StartType type, ResetMode mode); //UBX-CFG-RST
-  void stopGnss(StartTypes startType = HOT_START); //The receiver will not be restarted, but will stop any GNSS related processing
-  void startGnss(StartTypes startType = HOT_START); //Starts all GNSS tasks
-  void resetGnss(StartTypes startType = HOT_START); //only restarts the GNSS tasks, without reinitializing the full system or 
+  bool getCfgInf(Protocol protocolId); //UBX-CFG-INF
+  bool setCfgInf(CfgInfo * cfgInfo, Port portId = COM1); //UBX-CFG-INF
+  //char * getErrMsg(DebugLevel debugLevel); //UBX-INF-* debug messages
+  bool getCfgPrt(Port portId = COM1); //UBX-CFG-PRT
+  bool setCfgPrt(CfgPrt * cfgPrt); //UBX-CFG-PRT
+  bool config(ConfMask mask, ConfigType type); //UBX-CFG-CFG
+  bool config(ConfMask mask, ConfigType type, Device dev); //UBX-CFG-CFG
+  bool defaultConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true);
+  bool saveConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true);
+  bool loadConfig(bool ioPort = true, bool msgConf = true, bool infMsg = true, bool navConf = true, bool rxmConf = true, bool senConf = true, bool rinvConf = true, bool antConf = true, bool logConf = true, bool ftsConf = true);
+  bool cfgRst(StartType type, ResetMode mode); //UBX-CFG-RST
+  bool stopGnss(StartTypes startType = HOT_START); //The receiver will not be restarted, but will stop any GNSS related processing
+  bool startGnss(StartTypes startType = HOT_START); //Starts all GNSS tasks
+  bool resetGnss(StartTypes startType = HOT_START); //only restarts the GNSS tasks, without reinitializing the full system or 
 												//reloading any stored configuration.
-  void reset(bool soft = true, bool afterShutdown = true, StartTypes startType = HOT_START); //hardware or software reset. Reset afterShutdown applies to hardware reset only
-  CfgMsg * getCfgMsg(uint8_t msgClass, uint8_t msgId, uint32_t timeout = maxWait); //UBX-CFG-MSG
-  bool setCfgMsg(uint8_t msgClass, uint8_t msgId, uint8_t rate, uint32_t timeout = maxWait); //UBX-CFG-MSG
-  PowerMode * getCfgPms(uint32_t timeout = maxWait); //UBX-CFG-PMS
-  bool setCfgPms(PowerModes mode, uint8_t period = 0, uint8_t onTime = 0, uint32_t timeout = maxWait); //UBX-CFG-PMS
-  CfgPm * getCfgPm(uint32_t timeout = maxWait); //UBX-CFG-PM2
-  bool setCfgPm(uint8_t maxStartupStateDuration, uint32_t udpatePeriod, uint32_t searchPeriod, uint32_t gridOffset, uint16_t onTime, uint16_t minAcqTime, uint32_t extintInactivity, CfgPmFlags flags, uint32_t timeout = maxWait); //UBX-CFG-PM2
-  CfgRxm * getCfgRxm(uint32_t timeout = maxWait); //UBX-CFG-RXM
-  bool setCfgRxm(CfgRxmLpMode mode, uint32_t timeout = maxWait); //UBX-CFG-RXM
-  CfgSbas * getCfgSbas(uint32_t timeout = maxWait); //UBX-CFG-SBAS
-  bool setCfgSbas(CfgSbasUsage usage, uint32_t scanMode1, uint8_t scanMode2, uint32_t timeout = maxWait); //UBX-CFG-SBAS
-  CfgNmea * getCfgNmea(uint32_t timeout = maxWait); //UBX-CFG-NMEA
-  bool setCfgNmea(CfgNmeaFilter filter, uint8_t nmeaVersion, uint8_t maxSVs, CfgNmeaFlags flags, CfgNmeaGnss gnssFilter, bool displayNonNmeaSVs, CfgNmeaTalkerId mainTalkerId, bool gsvTalkerIdIsMain, char * dbsTalkerId, uint32_t timeout = maxWait); //UBX-CFG-NMEA
-  ODOCfg * getCfgOdo(uint32_t timeout = maxWait); //UBX-CFG-ODO
-  bool setCfgOdo(OdoFlags flags, OdoProfile profile, uint8_t maxSpeed, uint8_t maxPosAccuracy, uint8_t velGain, uint8_t COGgain, uint32_t timeout = maxWait); //UBX-CFG-ODO
-  CfgLogFilter * getCfgLogFilter(uint32_t timeout = maxWait); //UBX-CFG-LOGFILTER
-  bool setCfgLogFilter(uint8_t minInterval, uint8_t timeThreshold, uint8_t speedThreshold, uint8_t positionThreshold, CfgLogFilterFlags flags, uint32_t timeout = maxWait); //UBX-CFG-LOGFILTER
-  LogInfo * getLogInfo(uint32_t timeout = maxWait); //UBX-LOG-INFO
-  bool logRetrieve(uint32_t index, uint32_t count); //UBX-LOG-RETRIEVE; count <=256. Use logFind to get the index
-  bool createLog(LogSize logSize, uint32_t userDefinedSize = 0, bool circular = true, uint32_t timeout = maxWait); //UBX-LOG-CREATE
-  bool eraseLog(uint32_t timeout = maxWait); //UBX-LOG-ERASE
-  uint32_t logFind(DateTime dateTime, uint32_t timeout = maxWait); //UBX-LOG-FINDTIME
-  bool logMsg(const char * msg, uint8_t len, uint32_t timeout = maxWait); //UBX-LOG-STRING
-  bool enableLogging(uint8_t interval, uint32_t timeout = maxWait);
-  bool disableLogging(uint32_t timeout = maxWait);
+  bool reset(bool soft = true, bool afterShutdown = true, StartTypes startType = HOT_START); //hardware or software reset. Reset afterShutdown applies to hardware reset only
+  bool getCfgMsg(uint8_t msgClass, uint8_t msgId); //UBX-CFG-MSG
+  bool setCfgMsg(uint8_t msgClass, uint8_t msgId, Port port, uint8_t rate); //UBX-CFG-MSG
+  bool getCfgPms(); //UBX-CFG-PMS
+  int setCfgPms(PowerMode * powerMode); //UBX-CFG-PMS
+  bool getCfgPm(); //UBX-CFG-PM2
+  bool setCfgPm(CfgPm * cfgPm); //UBX-CFG-PM2
+  bool getCfgRxm(); //UBX-CFG-RXM
+  bool setCfgRxm(CfgRxmLpMode mode); //UBX-CFG-RXM
+  bool getCfgSbas(); //UBX-CFG-SBAS
+  bool setCfgSbas(CfgSbas * cfgSbas); //UBX-CFG-SBAS
+  bool getCfgNmea(); //UBX-CFG-NMEA
+  bool setCfgNmea(CfgNmea * cfgNmea); //UBX-CFG-NMEA
+  bool getCfgOdo(); //UBX-CFG-ODO
+  bool setCfgOdo(ODOCfg * odoCfg); //UBX-CFG-ODO
+  bool getCfgLogFilter(); //UBX-CFG-LOGFILTER
+  bool setCfgLogFilter(CfgLogFilter * cfgLogFilter); //UBX-CFG-LOGFILTER
+  void getLogInfo(); //UBX-LOG-INFO
+  void logRetrieve(uint32_t index, uint32_t count); //UBX-LOG-RETRIEVE; count <=256. Use logFind to get the index
+  bool createLog(LogSize logSize, uint32_t userDefinedSize = 0, bool circular = true); //UBX-LOG-CREATE
+  bool eraseLog(); //UBX-LOG-ERASE
+  uint32_t logFind(DateTime dateTime); //UBX-LOG-FINDTIME
+  void logMsg(const char * msg, uint8_t len); //UBX-LOG-STRING
+  bool enableLogging(uint16_t interval);
+  bool disableLogging();
   void infMsg(const char * infLevel); //UBX-INF-XXX
-  GnssConf * getGnss(uint32_t timeout = maxWait); //UBX-CFG-GNSS
-  bool setGnss(MajorGnss gnss, bool enableSBAS, bool enableIMES, uint32_t timeout = maxWait); //UBX-CFG-GNSS
-  GnssSupport * getSupportedGnss(uint32_t timeout = maxWait); //UBX-MON-GNSS
-  NavRate * getNavRate(uint32_t timeout = maxWait); //UBX-CFG-RATE
-  bool setNavRate(uint16_t measurementRate, uint16_t navSolRate, TimeRef timeRef, uint32_t timeout = maxWait); //measurementRate in ms, navSolRate is number of measurements for each NavSol
-  TimePulse * getTimePulse(uint32_t timeout = maxWait); //UBX-CFG-TP5 - for use with UBX-TIM-TP, which gives the time for the next time pulse. UBX-NAV-PVT gives time for the previous time pulse!
+  bool getGnss(); //UBX-CFG-GNSS
+  int setGnss(MajorGnss gnss, bool enableSBAS, bool enableIMES); //UBX-CFG-GNSS
+  void getSupportedGnss(); //UBX-MON-GNSS
+  bool getNavRate(); //UBX-CFG-RATE
+  bool setNavRate(NavRate * navRate); //measurementRate in ms, navSolRate is number of measurements for each NavSol
+  bool getTimePulse(); //UBX-CFG-TP5 - for use with UBX-TIM-TP, which gives the time for the next time pulse. UBX-NAV-PVT gives time for the previous time pulse!
 														//don't forget to account for antenna cable delay - 50ns in my chip + any delays in arduino and app!
-  bool setTimePulse(uint32_t pulse_period, uint32_t pulse_len, uint32_t pulse_period_locked, uint32_t pulse_len_locked, int32_t delay, TimePulseFlags flags, uint32_t timeout = maxWait); //for best time pulse performance it is recommended to disable SBAS - see setGNSS()
+  bool setTimePulse(TimePulse * tp); //for best time pulse performance it is recommended to disable SBAS - see setGNSS()
   																														 //also recommended to set measurement rate (setRate()) and time pulse to 1Hz
-  NavPvt * getNavPvt(uint32_t timeout = maxWait); //UBX-NAV-PVT
-  NavSat * getNavSat(uint32_t timeout = maxWait); //UBX-NAV-SAT
-  NavTimeUtc * getNavTimeUtc(uint32_t timeout = maxWait); //UBX-NAV-TIMEUTC
-  TimeTP * getTimeTp(uint32_t timeout = maxWait); //UBX-TIM-TP - use gpsToUtc() function to convert GPS time(weeks, ms) to UTC(DateTime: year, month, day, hour, minute, second)
-  TimTm * getTimTm(uint32_t timeout = maxWait); //UBX-TIM-TM2
-  NavClock * getNavClock(uint32_t timeout = maxWait); //UBX-NAV-CLOCK
-  NavDGPS * getNavDgps(uint32_t timeout = maxWait); //UBX-NAV-DGPS
-  NavDOP * getNavDop(uint32_t timeout = maxWait); //UBX-NAV-DOP
-  NavGeofence * getNavGeofence(uint32_t timeout = maxWait); //UBX-NAV-GEOFENCE
-  GeoFences * getCfgGeofences(uint32_t timeout = maxWait); //UBX-CFG-GEOFENCE
-  bool setCfgGeofence(GeoFence * geofence, uint8_t confidenceLevel, uint32_t timeout = maxWait); //UBX-CFG-GEOFENCE
-  NavODO * getNavOdo(uint32_t timeout = maxWait); //UBX-NAV-ODO
-  bool resetOdo(uint32_t timeout = maxWait); //UBX-NAV-RESETODO
-  NavOrb * getNavOrb(uint32_t timeout = maxWait); //UBX-NAV-ORB
-  NavPosLlh * getNavPosLlh(uint32_t timeout = maxWait); //UBX-NAV-POSLLH
-  NavSbas * getNavSbas(uint32_t timeout = maxWait); //UBX-NAV-SBAS
-  NavSlas * getNavSlas(uint32_t timeout = maxWait); //UBX-NAV-SLAS
-  NavTimeBdsGal * getNavTimeBds(uint32_t timeout = maxWait); //UBX-NAV-TIMEBDS
-  NavTimeBdsGal * getNavTimeGal(uint32_t timeout = maxWait); //UBX-NAV-TIMEGAL
-  NavTimeGps * getNavTimeGps(uint32_t timeout = maxWait); //UBX-NAV-TIMEGPS
-  NavTimeGlo * getNavTimeGlo(uint32_t timeout = maxWait); //UBX-NAV-TIMEGLO
-  NavTimeLs * getNavTimeLs(uint32_t timeout = maxWait); //UBX-NAV-TIMELS
+  void getNavPvt(); //UBX-NAV-PVT
+  void getNavSat(); //UBX-NAV-SAT
+  void getNavTimeUtc(); //UBX-NAV-TIMEUTC
+  void getTimTp(); //UBX-TIM-TP - use gpsToUtc() function to convert GPS time(weeks, ms) to UTC(DateTime: year, month, day, hour, minute, second)
+  void getTimTm(); //UBX-TIM-TM2
+  void getNavClock(); //UBX-NAV-CLOCK
+  void getNavDgps(); //UBX-NAV-DGPS
+  void getNavDop(); //UBX-NAV-DOP
+  void getNavGeofence(); //UBX-NAV-GEOFENCE
+  bool getCfgGeofences(); //UBX-CFG-GEOFENCE
+  bool setCfgGeofence(GeoFence * geofence, uint8_t confidenceLevel); //UBX-CFG-GEOFENCE
+  void getNavOdo(); //UBX-NAV-ODO
+  bool resetOdo(); //UBX-NAV-RESETODO
+  void getNavOrb(); //UBX-NAV-ORB
+  void getNavPosEcef(); //UBX-NAV-POSECEF
+  void getNavPosLlh(); //UBX-NAV-POSLLH
+  void getNavSbas(); //UBX-NAV-SBAS
+  void getNavSlas(); //UBX-NAV-SLAS
+  void getNavTimeBds(); //UBX-NAV-TIMEBDS
+  void getNavTimeGal(); //UBX-NAV-TIMEGAL
+  void getNavTimeGps(); //UBX-NAV-TIMEGPS
+  void getNavTimeGlo(); //UBX-NAV-TIMEGLO
+  void getNavTimeLs(); //UBX-NAV-TIMELS
+  void getNavStatus(); //UBX-NAV-STATUS
+  void getNavVelEcef(); //UBX-NAV-VELECEF
+  void getNavVelNed(); //UBX-NAV-VELNED
 
   void getGNRMC(GNRMC * data); //Recommended Minimum data. The recommended minimum sentence defined by NMEA for GNSS system data.
   void getGNGGA(GNGGA * data); //Global positioning system fix data for GN (multiple GNSS). In case of GN, it is recommened to use GNS messages instead
@@ -1876,20 +2020,18 @@ public:
   void getGbs(GBS* data); //GNSS Satellite Fault Detection
   void getDtm(DTM* data); //Datum Reference
   void getGrs(GRS* data); //GNSS Range Residuals
-  void nmeaGpq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GP)
-  void nmeaGnq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GN)
-  void nmeaGlq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GL)
-  void nmeaGbq(const char* talkerId, const char* msgId); //Poll a standard message (if the current Talker ID is GB)
+  void nmeaGpq(const char* msgId, const char* talkerId = "VR"); //Poll a standard message (if the current Talker ID is GP)
+  void nmeaGnq(const char* msgId, const char* talkerId = "VR"); //Poll a standard message (if the current Talker ID is GN)
+  void nmeaGlq(const char* msgId, const char* talkerId = "VR"); //Poll a standard message (if the current Talker ID is GL)
+  void nmeaGbq(const char* msgId, const char* talkerId = "VR"); //Poll a standard message (if the current Talker ID is GB)
   void getPubxPosition(PubxPosition * data); //PUBX-POSITION
   void getPubxTime(PubxTime * data); //PUBX-TIME
   void pubxConfig(BaudRate rate, InProtoMask inMask, OutProtoMask outMask, Port portId = COM1, bool autoBauding = false); //PUBX-CONFIG
-  void pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2 = 0, uint8_t rateDDC = 0, uint8_t rateUsb = 0, uint8_t rateSpi = 0); //PUBX-RATE
+  void pubxRate(const char * msgId, uint8_t rateCom1, uint8_t rateCom2 = 0, uint8_t rateUsb = 0, uint8_t rateDDC = 0, uint8_t rateSpi = 0); //PUBX-RATE
 
 private:
-  void calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload);
+  void calculateChecksum(uint8_t msgClass, uint8_t msgId, uint16_t len, uint8_t * pload, Checksum * checksum);
   void nmeaVerifyChecksum();
-  bool pollNoError(uint32_t timeout);
-  bool ackNoError(uint32_t timeout);
 };
 
 //helper functions
@@ -1904,3 +2046,6 @@ string dmsLatToStr(Latitude * lat);
 string dmsLonToStr(Longitude * lon);
 void split(string msg[], uint8_t array_size, string pload);
 tm * gps2tm(DateTime * dt, tm * time_tm);
+char * humanTime(uint32_t time, char * htime);
+void delay(int sec = defaultDelay);
+

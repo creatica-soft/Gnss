@@ -1,645 +1,153 @@
-//compile with gcc -lsupc++ -lstdc++ -lwiringPi -O -o gnss gnss_app.cpp
+//compile with g++ -O -o gnss gnss_app.cpp
+#include <error.h>
+#include <signal.h>
+#include <unistd.h>
 #include "gnss.cpp"
-#include <wiringPi.h>
-
-#define INTERRUPT_PIN 25
 
 using namespace std;
 
-volatile bool getLog, gpsDataAvailable;
+volatile bool getLog;
 const uint8_t navRate = 1;
-const Port gnssPort = COM1;
-int gnssPortRate = 9600;
-
-//const char* dev = "/dev/ttyAMA3";
+Port gnssPort = COM1;
+uint32_t gnssPortRate = 9600;
 
 Gnss gps;
 
-void lg() {
-	getLog = true;
-}
-
-void tp() {
-	gps.tp();
-}
-
 int8_t startLogging(uint8_t interval, LogSize ls_enum, uint32_t customSize, bool circular) {
-	LogInfo* log = gps.getLogInfo();
-	if (log == NULL) { printf(" logInfo NULL\n"); return -1; }
-	if (!(gps.logFileExists)) {
-		printf("Creating log file...\n");
-		if (!(gps.createLog(ls_enum, customSize, circular))) {
-			printf(" failed\n"); gps.logInfo();	return -1;
-		}
-		sleep(1);
-		log = gps.getLogInfo();
-		if (log == NULL) { printf(" logInfo NULL\n"); return -1; }
-		if (!(gps.logFileExists)) { 
-			printf(" failed\n"); gps.logInfo(); return -1; 
-		}
-		printf(" OK\n");
-		gps.logInfo();
-	} else printf("Log file already exists\n");
-	if (gps.loggingEnabled) printf("Logging already enabled\n");
-	else {
-		printf("Enabling logging...\n");
+	gps.getLogInfo();
+	if (gps.gnssLogInfo.flags.enabled == 0) {
 		if (!gps.enableLogging(interval)) {
-			printf(" failed\n");  gps.logInfo(); return -1;
+			printf("enableLogging() failed\n"); return -1;
 		}
-		sleep(1);
-		log = gps.getLogInfo();
-		if (log == NULL) { printf(" logInfo NULL\n"); return -1; }
-		if (!gps.loggingEnabled) {
-			printf(" failed\n"); gps.logInfo(); return -1;
-		}
-		printf(" OK\n");
-		gps.logInfo();
+		else printf("enableLogging() ok\n");
+	}
+	if (gps.gnssLogInfo.flags.inactive == 1) {
+		if (!(gps.createLog(ls_enum, customSize, circular))) {
+			printf("createLog() failed\n"); return -1;
+		} else printf("createLog() ok\n");
 	}
 	char msg[16] = "Logging started"; msg[15] = 0;
-	if (gps.logMsg(msg, 16)) printf(" logMsg %s OK\n", msg); else {
-		printf(" logMsg %s failed\n", msg);
-	}
+	gps.logMsg(msg, 16);
 	return 0;
 }
 
 int8_t stopLogging() {
-	if (!gps.loggingEnabled) return 0;
-	char msg[16] = "Logging stopped"; msg[15] = 0;
-	if (gps.logMsg(msg, 16)) printf(" logMsg %s OK\n", msg); else {
-		printf(" logMsg %s failed\n", msg);
+	gps.getLogInfo();
+	if (gps.gnssLogInfo.flags.inactive == 0 && gps.gnssLogInfo.flags.enabled == 1) {
+		char msg[16] = "Logging stopped"; msg[15] = 0;
+		gps.logMsg(msg, 16);
 	}
-	printf("Disabling logging...\n");
-	if (!(gps.disableLogging())) { printf(" failed\n"); return -1; }
-	LogInfo* log = gps.getLogInfo();
-	if (log == NULL) { printf(" logInfo is NULL\n"); return -1; }
-	if (gps.loggingEnabled) {
-		printf(" failed\n"); gps.logInfo(); return -1;
+	if (gps.gnssLogInfo.flags.enabled == 1) {
+		if (!(gps.disableLogging())) {
+			printf("disableLogging() failed\n"); return -1;
+		} else printf("disableLogging() ok\n");
 	}
-	printf(" OK\n");
-	gps.logInfo();
 	return 0;
 }
 
 int8_t eraseLog() {
-	LogInfo* log = gps.getLogInfo();
-	if (log == NULL) { printf(" logInfo is NULL\n"); return -1; }
-	gps.logInfo();
-	if (gps.loggingEnabled) {
-		if (stopLogging() != 0) return -1;
-		sleep(1);
-	}
-	log = gps.getLogInfo();
-	if (log == NULL) { printf(" logInfo is NULL\n"); return -1; }
-	gps.logInfo();
-	//if (gps.logFileExists) {
-		printf("Erasing log...\n");
-		if (!gps.eraseLog()) { printf(" failed\n"); return -1;	}
-		sleep(1);
-		log = gps.getLogInfo();
-		if (log == NULL) { printf(" logInfo is NULL\n"); return -1; }
-		if (gps.logFileExists) { printf(" failed\n"); gps.logInfo(); return -1; }
-		printf(" OK\n");
-		gps.logInfo();
-	//}
+	gps.getLogInfo();
+	if (gps.gnssLogInfo.flags.enabled == 1) stopLogging();
+	if (!gps.eraseLog()) { printf("eraseLog() failed\n"); return -1; }
+	else printf("eraseLog() ok\n");
 	return 0;
 }
 
-void retrieveLogs(uint32_t idx, uint32_t count) {
-	if (!gps.logRetrieve(idx, count)) { printf("logRetrieve failed\n"); return; }
-}
-
-int tRateToI(speed_t r) {
+uint32_t tRateToI(speed_t r) {
 	switch (r) {
-		case B4800: gnssPortRate = 4800; break;
-		case B9600: gnssPortRate = 9600; break;
-		case B19200: gnssPortRate = 19200; break;
-		case B38400: gnssPortRate = 38400; break;
-		case B57600: gnssPortRate = 57600; break;
-		case B115200: gnssPortRate = 115200; break;
-		case B230400: gnssPortRate = 230400; break;
+		case B4800: return 4800;
+		case B9600: return 9600;
+		case B19200: return 19200;
+		case B38400: return 38400;
+		case B57600: return 57600;
+		case B115200: return 115200;
+		case B230400: return 230400;
 	}
-	return gnssPortRate;
 }
-
 
 int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
 	speed_t rates[7] = { B4800, B9600, B19200, B38400, B57600, B115200, B230400 };
 	time_t utc, t1;
-	CfgMsg* cfg = NULL;
-	CfgPrt* cfgPrt = NULL;
+
 	getLog = false;
 	gps = Gnss();
+	InProtoMask inMask;
+	OutProtoMask outMask;
+	inMask.inNmea = 1;
+	inMask.inUbx = 1;
+	inMask.inRtcm = 1;
+	inMask.reserved = 0;
+	outMask.outNmea = 1;
+	outMask.outUbx = 1;
+	outMask.reserved = 0;
+
 	printf("TOPGNSS\n");
-	printf("Connecting to GNSS on %s at %d baud\n", dev, gnssPortRate);
-	gps.begin(dev, gnssPortRate);
-	cfgPrt = gps.getCfgPrt();
-	if (cfgPrt != NULL) printf(" connected\n");
+	printf("Connecting to GNSS on %s at %u baud\n", dev, gnssPortRate);
+
+	gps.begin(dev, rate);
+
+	utc = gps.utcTime;
+	gps.nmeaGnq("RMC");
+	delay(2);
+	if (utc != gps.utcTime) printf(" connected.\n");
 	else {
 		for (int i = 0; i < 7; i++) {
 			if (rate != rates[i]) {
 				printf(" failed. Re-trying with %d baud rate...\n", tRateToI(rates[i]));
 				gps.end();
 				gps.begin(dev, rates[i]);
-				//writing at wrong baud rate causes Gnss receiver to get disabled after 100 or frame errors
-				//instead of calling getCfgPrt(), we should passively listen for something meaninful like UBX-NAV-EOE,
-				//which updates iTOW. The problem with UBX-NAV-EOE is that it is not sent by default, only NMEA messages are
-				//GNRMC message updates utcTime, let's watch it
-				t1 = time(NULL);
 				utc = gps.utcTime;
-				while (time(NULL) - t1 < 2) {
-					gps.get();
-				}
+				gps.nmeaGnq("RMC");
+				delay(2);
 				if (utc != gps.utcTime) { printf(" connected.\n"); break; }
 				else if (i == 6) { printf(" sorry, giving up...\n"); return -1; }
 			}
 		}
 	}
+	delay();
 	if (reset) {
 		printf("Reseting...\n");
 		gps.reset(soft);
-		sleep(3);
+		delay(3);
 	}
-	if (gps.baudRate != rate) {
-		printf("Setting desired rate %d...\n", tRateToI(rate));
-		cfgPrt = gps.getCfgPrt();
-		if (cfgPrt == NULL) { printf("cfgPrt is NULL"); return -1; }
-		switch (rate) {
-			case B4800: cfgPrt->baudRate = BAUD_RATE_4800; break;
-			case B9600: cfgPrt->baudRate = BAUD_RATE_9600; break;
-			case B19200: cfgPrt->baudRate = BAUD_RATE_19200; break;
-			case B38400: cfgPrt->baudRate = BAUD_RATE_38400; break;
-			case B57600: cfgPrt->baudRate = BAUD_RATE_57600; break;
-			case B115200: cfgPrt->baudRate = BAUD_RATE_115200; break;
-			case B230400: cfgPrt->baudRate = BAUD_RATE_230400; break;
+	printf("gps.baudRate = %u; rate = %u\n", (uint32_t)(gps.gnssPort.baudRate), gnssPortRate);
+	if (gps.gnssPort.baudRate != (BaudRate)gnssPortRate) {
+		printf("Setting desired rate %u...\n", gnssPortRate);
+		//gps.setCfgPrt(gps.gnssPort.portId, (BaudRate)gnssPortRate, gps.gnssPort.mode, gps.gnssPort.inProtoMask, gps.gnssPort.outProtoMask);
+		gps.pubxConfig((BaudRate)gnssPortRate, inMask, outMask, gnssPort);
+		gps.end();
+		printf("Connecting with desired rate %u...\n", gnssPortRate);
+		gps.begin(dev, rate);
+
+		utc = gps.utcTime;
+		gps.nmeaGnq("RMC");
+		delay(2);
+		if (utc != gps.utcTime) {
+			printf("Connected\n");
+			gps.saveConfig();
 		}
-		if (gps.setCfgPrt(cfgPrt->portId, cfgPrt->baudRate, cfgPrt->mode, cfgPrt->inProtoMask, cfgPrt->outProtoMask))
-		{
-			printf(" success\n");
-			gps.end();
-			gps.begin(dev, rate);
-			t1 = time(NULL);
-			utc = gps.utcTime;
-			while (time(NULL) - t1 < 2) {
-				gps.get();
-			}
-			if (utc != gps.utcTime) {
-				printf("Connected at new rate %d\n", gnssPortRate);
-				if (gps.saveConfig()) printf("Configuration is saved\n");
-				else printf("Saving configuration failed\n");
-			}
-			else {
-				printf("Failed to connect at new rate %d\n", gnssPortRate); return -1;
-			}
-		} else {
-			printf(" failed.\n"); return -1;
+		else {
+			printf("Failed\n"); return -1;
 		}
 	}
-
-	wiringPiSetup();
-	wiringPiISR(INTERRUPT_PIN, INT_EDGE_RISING, tp);
-
-	if (gps.getVersion() != NULL) gps.monVer(MON_VER_EXTENSION_NUMBER);
-	else printf("getVersion() is NULL\n");
-	sleep(1);
-	/*
-	if (gps.getCfgPrt() != NULL) gps.cfgPrt();
-	else printf("getCfgPrt() is NULL\n");
-	sleep(1);
-	if (gps.getCfgPm() != NULL) gps.cfgPm();
-	else printf("getCfgPm() is NULL\n");
-	sleep(1);
-	if (gps.getCfgRxm() != NULL) gps.cfgRxm();
-	else printf("getCfgRxm() is NULL\n");
-	sleep(1);
-	if (gps.getSupportedGnss() != NULL) gps.monGnss();
-	else printf("getSupportedGnss() is NULL\n");
-	sleep(1);
-	if (gps.getGnss() != NULL) gps.cfgGnss();
-	else printf("getGnss() is NULL\n");
-	sleep(1);
-
-	printf("getCfgInf(UBX, gnssPort)");
-	if (gps.getCfgInf(UBX, gnssPort) != NULL) gps.cfgInf();
-	else printf(" failed\n");
-	sleep(1);
-	printf("getCfgInf(NMEA, gnssPort)");
-	if (gps.getCfgInf(NMEA, gnssPort) != NULL) gps.cfgInf();
-	else printf(" failed\n");
-	sleep(1);
-	printf("getCfgNav()");
-	if (gps.getCfgNav() != NULL) gps.cfgNav();
-	else printf(" failed\n");
-	sleep(1);
-
-	//setting dynModel to STATIONARY
-	printf("setDynamicModel");
-	if (gps.setDynamicModel(STATIONARY)) printf(" OK\n"); else printf(" failed\n");
-	sleep(1);
-
-	//set UTC to GLONASS
-	printf("setUtcStandard to GLONASS");
-	if (gps.setUtcStandard(GLONASS)) printf(" OK\n"); else printf(" failed\n");
-	sleep(1);
-
-	if (gps.getCfgPms() != NULL) gps.cfgPms();
-	sleep(1);
-	//set power mode to AGGRESSIVE_1HZ_POWER_MODE
-	printf("setPowerMode(AGGRESSIVE_1HZ): ");
-	if (gps.setCfgPms(AGGRESSIVE_1HZ_POWER_MODE)) printf(" OK\n");
-	else printf(" failed\n");
-	sleep(1);
-
-	//Turn on or off major GNSS
-	MajorGnss gnss;
-	gnss.Gps = 1;
-	gnss.Glonass = 1;
-	gnss.BeiDou = 0;
-	gnss.Galileo = 0;
-	bool enableSBAS = true, enableIMES = false;
-	printf("setGnss");
-	if (gps.setGnss(gnss, enableSBAS, enableIMES)) printf(" OK\n");
-	else printf(" failed\n");
-	sleep(1);
-
-	printf("getNavRate()");
-	if (gps.getNavRate() != NULL) gps.cfgRate();
-	else printf(" failed\n");
-	sleep(1);
-	printf("getTimePulse()");
-	if (gps.getTimePulse() != NULL) gps.cfgTp();
-	else printf(" failed\n");
-	sleep(1);
-
-	printf("getCfgOdo\n");
-	ODOCfg * odoCfg = gps.getCfgOdo();
-	if (odoCfg != NULL) {
-	  gps.cfgOdo();
-		  sleep(1);
-		  //set odomter profile to CYCLING
-	  printf("setOdo CYCLING: ");
-	  if (gps.setCfgOdo(odoCfg->flags, CYCLING, odoCfg->cogMaxSpeed, odoCfg->cogMaxPosAccuracy, odoCfg->velLPgain, odoCfg->cogLPgain)) printf(" OK\n");
-	  else printf(" failed\n");
-	} else printf(" failed\n");
-	sleep(1);
-
-	printf("getCfgLogFilter()");
-	if (gps.getCfgLogFilter() != NULL) gps.cfgLogFilter();
-	else printf(" failed\n");
-	sleep(1);
-
-	printf("getLogInfo()");
-	if (gps.getLogInfo() != NULL) gps.logInfo();
-	else printf(" failed\n");
-	sleep(1);
-
-	printf("getCfgNmea()");
-	if (gps.getCfgNmea() != NULL) gps.cfgNmea();
-	else printf(" failed\n");
-	sleep(1);
-
-	GeoFence geofence;
-	Latitude lat;
-	lat.deg = 36; lat.min = 48, lat.sec = 41; lat.NS = 'S';
-	Longitude lon;
-	lon.deg = 174; lon.min = 38; lon.sec = 46; lon.EW = 'E';
-	geofence.lat = dmsToLongLat(&lat);
-	geofence.lon = dmsToLongLon(&lon);
-	geofence.radius = 1000000;//10km
-	uint8_t confidenceLevel = 3; //0=no confidence required, 1=68%, 2=95%, 3=99.7% etc.
-	if (gps.setCfgGeofence(&geofence, confidenceLevel)) printf("setCfgGeofence OK\n"); else printf("setCfgGeofence failed\n");
-	sleep(1);
-	if (gps.getCfgGeofences(3000) != NULL) gps.cfgGeoFence(); else printf("cfgGeofence NULL\n");
-	sleep(1);
-
-	printf("getCfgMsg(UBX_NAV, NAV_GEOFENCE)");
-	cfg = gps.getCfgMsg(UBX_NAV, NAV_GEOFENCE);
-	sleep(1);
-	if (cfg != NULL) {
-			if (cfg->rate[gnssPort] != navRate) {
-					if (gps.setCfgMsg(UBX_NAV, NAV_GEOFENCE, navRate)) printf("UBX-NAV-GEOFENCE OK\n");
-					else printf("UBX-NAV-GEOFENCE failed\n");
-					sleep(1);
-			}
-			printf(" OK\n");
-	} else printf(" failed\n");
-	*/
-	/*
-	  printf("getCfgMsg(UBX_NAV, NAV_CLOCK)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_CLOCK);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_CLOCK, navRate)) printf("UBX-NAV-CLOCK OK\n");
-		  else printf("UBX-NAV-CLOCK failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_TIM, TIM_TP)");
-	  cfg = gps.getCfgMsg(UBX_TIM, TIM_TP);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_TIM, TIM_TP, navRate)) printf("UBX-TIM-TP OK\n");
-		  else printf("UBX-TIM-TP failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_DOP)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_DOP);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_DOP, navRate)) printf("UBX-NAV-DOP OK\n");
-		  else printf("UBX-NAV-DOP failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_ORB)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_ORB);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_ORB, navRate)) printf("UBX-NAV-ORB OK\n");
-		  else printf("UBX-NAV-ORB failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_POSLLH)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_POSLLH);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_POSLLH, navRate)) printf("UBX-NAV-POSLLH OK\n");
-		  else printf("UBX-NAV-POSLLH failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_PVT)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_PVT);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_PVT, navRate)) printf("UBX-NAV-PVT OK\n");
-		  else printf("UBX-NAV-PVT failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_SAT)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_SAT);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_SAT, navRate)) printf("UBX-NAV-SAT OK\n");
-		  else printf("UBX-NAV-SAT failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_TIMEGPS)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_TIMEGPS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_TIMEGPS, navRate)) printf("UBX-NAV-TIMEGPS OK\n");
-		  else printf("UBX-NAV-TIMEGPS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_TIMEUTC)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_TIMEUTC);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_TIMEUTC, navRate)) printf("UBX-NAV-TIMEUTC OK\n");
-		  else printf("UBX-NAV-TIMEUTC failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_TIMELS)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_TIMELS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_TIMELS, navRate)) printf("UBX-NAV-TIMELS OK\n");
-		  else printf("UBX-NAV-TIMELS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_DGPS)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_DGPS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_DGPS, navRate)) printf("UBX-NAV-DGPS OK\n");
-		  else printf("UBX-NAV-DGPS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_ODO)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_ODO);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_ODO, navRate)) printf("UBX-NAV-ODO OK\n");
-		  else printf("UBX-NAV-ODO failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_SBAS)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_SBAS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_SBAS, navRate)) printf("UBX-NAV-SBAS OK\n");
-		  else printf("UBX-NAV-SBAS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NAV, NAV_SLAS)");
-	  cfg = gps.getCfgMsg(UBX_NAV, NAV_SLAS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NAV, NAV_SLAS, navRate)) printf("UBX-NAV-SLAS OK\n");
-		  else printf("UBX-NAV-SLAS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NMEA, NMEA_GNS)");
-	  cfg = gps.getCfgMsg(UBX_NMEA, NMEA_GNS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NMEA, NMEA_GNS, navRate)) printf("UBX-NMEA-GNS OK\n");
-		  else printf("UBX-NMEA-GNS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NMEA, NMEA_GST)");
-	  cfg = gps.getCfgMsg(UBX_NMEA, NMEA_GST);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NMEA, NMEA_GST, navRate)) printf("UBX-NMEA-GST OK\n");
-		  else printf("UBX-NMEA-GST failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NMEA, NMEA_VLW)");
-	  cfg = gps.getCfgMsg(UBX_NMEA, NMEA_VLW);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NMEA, NMEA_VLW, navRate)) printf("UBX-NMEA-VLW OK\n");
-		  else printf("UBX-NMEA-VLW failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_NMEA, NMEA_ZDA)");
-	  cfg = gps.getCfgMsg(UBX_NMEA, NMEA_ZDA);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_NMEA, NMEA_ZDA, navRate)) printf("UBX-NMEA-ZDA OK\n");
-		  else printf("UBX-NMEA-ZDA failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_PUBX, PUBX_POSITION)");
-	  cfg = gps.getCfgMsg(UBX_PUBX, PUBX_POSITION);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_PUBX, PUBX_POSITION, navRate)) printf("UBX-PUBX-POSITION OK\n");
-		  else printf("UBX-PUBX-POSITION failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  printf("getCfgMsg(UBX_PUBX, PUBX_TIME)");
-	  cfg = gps.getCfgMsg(UBX_PUBX, PUBX_TIME);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != navRate) {
-		  if (gps.setCfgMsg(UBX_PUBX, PUBX_TIME, navRate)) printf("UBX-PUBX-TIME OK\n");
-		  else printf("UBX-PUBX-TIME failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-
-	  //somehow UBX-PUBX-SVSTATUS doesn't work on my arduino mega - use at your own risk!
-	  printf("getCfgMsg(UBX_PUBX, PUBX_SVSTATUS)");
-	  cfg = gps.getCfgMsg(UBX_PUBX, PUBX_SVSTATUS);
-	  sleep(1);
-	  if (cfg != NULL) {
-			  printf(" OK\n");
-			  if (cfg->rate[gnssPort] != 0) {
-		  if (gps.setCfgMsg(UBX_PUBX, PUBX_SVSTATUS, 0)) printf("UBX-PUBX-SVSTATUS OK\n");
-		  else printf("UBX-PUBX-SVSTATUS failed\n");
-			  sleep(1);
-			}
-	  }
-	  else printf(" failed\n");
-	*/
-
-	/*InProtoMask inMask;
-	OutProtoMask outMask;
-	inMask.inUbx = 1; inMask.inNmea = 1; inMask.inRtcm = 1;
-	outMask.outUbx = 1; outMask.outNmea = 1;
-	gps.pubxConfig(BAUD_RATE_57600, inMask, outMask);
-	gps.end();
-	gps.begin(dev, B57600);*/
-
-	//turn off (0), on (1) msgId on specific interface
-	/*const char* msgId = "GLL";
-	uint8_t rateOnCOM1 = 1;
-	gps.pubxRate(msgId, rateOnCOM1);*/
-	
-	//poll NMEA message IDs (GBS, GRS, DTM) using "EI" as its own talker ID
-	//gps.nmeaGnq("EI", "GBS");
-	//gps.nmeaGnq("EI", "GRS");
-	//gps.nmeaGnq("EI", "DTM");
-
-	/*eraseLog();
-	if (startLogging(5, USER_DEFINED_SIZE, 8192, false) == 0) {
-		sleep(20);
-		getLog = true;
-	}*/
-	return 0;
+	const char * nmea_sentences[] = { "RMC", "DTM", "GBS", "GGA", "GLL", "GNS", "GRS", "GSA", "GST", "GSV", "VLW", "VTG", "ZDA", NULL };
+	for (int i = 0; nmea_sentences[i]; i++) gps.pubxRate(nmea_sentences[i], 0);
+	gps.pubxConfig((BaudRate)gnssPortRate, inMask, outMask, gnssPort);
+    return 0;
 }
 
 void loop() {
 	if (getLog) {
 		if (stopLogging() == 0) {
-			LogInfo* log = gps.getLogInfo();
-			if (log != NULL) {
-				uint32_t num = log->entryCount;
-				printf("Retrieving %lu log records\n", num);
-				uint32_t j = 0, k = num / 256;
-				for (uint32_t i = 0; i < k; i++) {
-					retrieveLogs(j, 256);
-					j += 256;
-				}
-				retrieveLogs(j, num % 256);
+			gps.getLogInfo();
+			uint32_t num = gps.gnssLogInfo.entryCount;
+			printf("Retrieving %u log records\n", num);
+			uint32_t j = 0, k = num / 256;
+			for (uint32_t i = 0; i < k; i++) {
+				gps.logRetrieve(j, 256);
+				j += 256;
 			}
-			else printf(" LogInfo NULL\n");
+			gps.logRetrieve(j, num % 256);
 		}
 		getLog = false;
 	}
@@ -647,17 +155,34 @@ void loop() {
 	gps.get();
 }
 
+static void sigHandler(int sig) {
+	//printf("sigio caught\n");
+	if (gps.isReady) {
+		//printf("calling loop...\n");
+		loop();
+	}
+}
+
 int main(int argc, char ** argv) {
 	char* dev;
 	speed_t rate;
 	bool reset = false, soft = true;
-	if (argc <= 2 || argc >= 5) {
-		printf("Usage: gnss <dev> [baudRate] [reset] [hard]\n");
+
+	if (argc <= 3 || argc > 6) {
+		printf("Usage: gnss <dev> <DDC|COM1|COM2|USB|SPI> [baudRate] [reset] [hard]\n");
 		printf("Supported baud rates are: 4800, 9600, 19200, 38400, 57600, 115200, 230400\n");
 		return -1;
 	}
 	dev = argv[1];
-	if (argc > 2) gnssPortRate = atoi(argv[2]);
+
+	if (argv[2] == "DDC") gnssPort = DDC;
+	else if (argv[2] == "COM1") gnssPort = COM1;
+	else if (argv[2] == "COM2") gnssPort = COM2;
+	else if (argv[2] == "USB") gnssPort = USB;
+	else if (argv[2] == "SPI") gnssPort = SPI;
+	else gnssPort = COM1;	
+
+	if (argc > 3) gnssPortRate = (speed_t)atoi(argv[3]);
 
 	switch (gnssPortRate) {
 		case 4800: rate = B4800; break;
@@ -668,17 +193,130 @@ int main(int argc, char ** argv) {
 		case 115200: rate = B115200; break;
 		case 230400: rate = B230400; break;
 	}
-	if (argc > 3) {
-		if (strcmp(argv[3],"reset") == 0) reset = true;
+	if (argc > 4) {
+		if (strcmp(argv[4],"reset") == 0) reset = true;
 	}
 
-	if (argc > 4) {
-		if (strcmp(argv[4], "hard") == 0) soft = false;
+	if (argc > 5) {
+		if (strcmp(argv[5], "hard") == 0) soft = false;
+	}
+	/* use sigaction instead for portability
+	if (signal(SIGIO, sigHandler) == SIG_ERR) {
+		printf("signal: %s\n", strerror(errno));
+		return -1;
+	}*/
+	struct sigaction sa;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sa.sa_handler = sigHandler;
+	if (sigaction(SIGIO, &sa, NULL) == -1) {
+		printf("sigaction error: %s\n", strerror(errno));
+		return -1;
 	}
 
 	if (setup(dev, rate, reset, soft) != 0) exit(-1);
+
+	delay(3);
+	gps.getVersion();
+	//gps.getCfgPrt();
+	//gps.getCfgPm();
+	//gps.getCfgRxm();
+    //gps.getCfgInf(UBX, gnssPort);
+	//gps.getCfgInf(NMEA, gnssPort);
+	/*gps.getCfgNav();
+	if (gps.getDynamicModel() != STATIONARY) gps.setDynamicModel(STATIONARY); //PORTABLE - default
+	if (gps.getUtcStandard() != GLONASS) {
+		gps.setUtcStandard(GLONASS); //AUTOMATIC - default
+		gps.getUtcStandard();
+	}*/
+	/*gps.getCfgPms();
+	if (gps.powerMode.powerMode != AGGRESSIVE_1HZ_POWER_MODE) {
+		gps.setCfgPms(AGGRESSIVE_1HZ_POWER_MODE); //BALANCED - default
+		gps.getCfgPms();
+	}*/
+	//gps.getCfgOdo();
+	//gps.setCfgOdo(gps.gnssCfgOdo.flags, CYCLING, gps.gnssCfgOdo.cogMaxSpeed, gps.gnssCfgOdo.cogMaxPosAccuracy, gps.gnssCfgOdo.velLPgain, gps.gnssCfgOdo.cogLPgain);
+	//gps.getCfgLogFilter();
+	//gps.getLogInfo();
+	//gps.getSupportedGnss();
+	//gps.getGnss();
+	/*MajorGnss gnss;
+	gnss.Gps = 1;
+	gnss.Glonass = 1;
+	gnss.BeiDou = 0;
+	gnss.Galileo = 0;
+	bool enableSBAS = true, enableIMES = false;
+	gps.setGnss(gnss, enableSBAS, enableIMES);
+	gps.getGnss();*/
+	//gps.getNavRate();
+	//gps.getTimePulse();
+	//gps.setCfgMsg(UBX_NAV, NAV_GEOFENCE, gnssPort, 0);
+	/*
+	//Geofencing
+	gps.setCfgMsg(UBX_NAV, NAV_GEOFENCE, gnssPort, navRate);
+	GeoFence geofence;
+	Latitude lat;// , lat2;
+	lat.deg = 36; lat.min = 48, lat.sec = 41; lat.NS = 'S';
+	Longitude lon;// , lon2;
+	lon.deg = 174; lon.min = 38; lon.sec = 46; lon.EW = 'E';
+	geofence.lat = dmsToLongLat(&lat);
+	//longLatToDMS(&lat2, geofence.lat);//to verify lat conversion from string to int32 and back
+	geofence.lon = dmsToLongLon(&lon);
+	//longLonToDMS(&lon2, geofence.lon); //to verify lon conversion from string to int32 and back
+	//printf("%s %s\n", dmsLatToStr(&lat2).c_str(), dmsLonToStr(&lon2).c_str());
+	geofence.radius = 1000000;//10km
+	uint8_t confidenceLevel = 3; //0=no confidence required, 1=68%, 2=95%, 3=99.7%, 4=99.99% etc.
+	gps.setCfgGeofence(&geofence, confidenceLevel);
+	gps.getCfgGeofences();
+	*/
+	//gps.setCfgMsg(UBX_NAV, NAV_CLOCK, gnssPort, navRate);
+	//gps.getCfgMsg(UBX_NAV, NAV_CLOCK);
+	//gps.setCfgMsg(UBX_TIM, TIM_TP, gnssPort, navRate);
+	//gps.getCfgMsg(UBX_TIM, TIM_TP);
+	//gps.setCfgMsg(UBX_NAV, NAV_PVT, gnssPort, navRate);
+	//gps.getCfgMsg(UBX_NAV, NAV_PVT);
+	//gps.setCfgMsg(UBX_NAV, NAV_DOP, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_ORB, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_POSLLH, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_SAT, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_TIMEGPS, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_TIMEUTC, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_TIMELS, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_DGPS, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_ODO, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_SBAS, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NAV, NAV_SLAS, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NMEA, NMEA_GNS, gnssPort, navRate);//uses U-BLOX protocol
+	//gps.pubxRate("GNS", navRate); //uses NMEA protocol
+	//gps.setCfgMsg(UBX_NMEA, NMEA_GST, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NMEA, NMEA_VLW, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_NMEA, NMEA_ZDA, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_PUBX, PUBX_POSITION, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_PUBX, PUBX_TIME, gnssPort, navRate);
+	//gps.setCfgMsg(UBX_PUBX, PUBX_SVSTATUS, gnssPort, navRate); //does not work - u-blox will stop its output
+	//gps.getCfgNmea();
+
+
+	//poll NMEA message IDs (GBS, GRS, DTM) using "VR" as its own talker ID
+	//gps.nmeaGnq("GBS");
+	//gps.nmeaGnq("GRS");
+	//gps.nmeaGnq("DTM");
+
+	/*eraseLog();
+	if (startLogging(5, SAFE_SIZE, 0, true) == 0) {
+		time_t t = time(NULL);
+		while (time(NULL) - t < 20)
+			sleep(1);
+		getLog = true;
+	}*/
+
+
+
 	while (1) {
-		loop();
+		if (pause() == -1 && errno == EINTR) continue; //printf("sigHandler returned\n");
+		else printf("error processing signal\n");
 	}
+
 	return 0;
 }
+
