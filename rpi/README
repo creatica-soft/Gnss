@@ -2,3 +2,4 @@ gps is a readline-based linux console application to interact with u-blox8 GNSS 
 Supports both NMEA and u-blox protocols.
 Features extended help and autocomplete actions.
 Support practically all features documented by u-blox in protocol versions up to 18.
+Provides wire-level debugging options for UBX and NMEA as well as standard protocol debugging options for NMEA and UBX.
