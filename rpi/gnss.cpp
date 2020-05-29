@@ -23,6 +23,7 @@ Gnss::Gnss() {
 	cfgOdoOk = false; cfgPmOk = false; cfgPmsOk = false; cfgPrtOk = false; cfgRateOk = false; cfgRstOk = false;
 	cfgRxmOk = false;  cfgSbasOk = false; cfgSlasOk = false; cfgTpOk = false; cfgNmeaOk = false; cfgCfgOk = false;
 	cfgGeofenceOk = false; resetOdoOk = false; logCreateOk = false; logEraseOk = false;
+	disp_nav = true; disp_cfg = true; disp_tim = true; disp_nmea = true; disp_pubx = true, disp_err = true;
 }
 
 /*void Gnss::tp() {
@@ -403,6 +404,7 @@ void Gnss::get() {
 			case NO_ERROR: 
 			switch (messageClass) {
 			case UBX_NAV:
+				if (!disp_nav) break;
 				switch (messageId) {
 				case NAV_EOE: break;
 				case NAV_CLOCK: navClock(); break;
@@ -457,6 +459,7 @@ void Gnss::get() {
 				default: printf("UBX-MON-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_TIM:
+				if (!disp_tim) break;
 				switch (messageId) {
 				case TIM_TM2: timTm(); break;
 				case TIM_TP: timTp(); break;
@@ -489,6 +492,7 @@ void Gnss::get() {
 				case ACK_NAK: ackNak(); break;
 				} break;
 			case UBX_NMEA:
+				if (!disp_nmea) break;
 				switch (messageId) {
 				case NMEA_RMC: nmeaRmc(); break;
 				case NMEA_VTG: nmeaVtg(); break;
@@ -507,6 +511,7 @@ void Gnss::get() {
 				default: printf("UBX-NMEA-%X has no function handler\n", messageId); break;
 				} break;
 			case UBX_PUBX:
+				if (!disp_pubx) break;
 				switch (messageId) {
 				case PUBX_POSITION: pubxPosition(); break;
 				case PUBX_SVSTATUS: pubxSvStatus(); break;
@@ -517,12 +522,12 @@ void Gnss::get() {
 			} break;
 			case CHECKSUM_ERROR: 
 				poll(pollMessageClass, pollMessageId, pollPayloadLength, pollPayload); 
-				printf("chksum err: msgClass %x, msgId %x\n", pollMessageClass, pollMessageId); 
+				if (disp_err)
+					printf("chksum err: msgClass %x, msgId %x\n", pollMessageClass, pollMessageId); 
 				break;
-			case OUT_OF_MEMORY: printf("out of memory\n"); break;
-			default: printf("MsgClass %X, msgId %X: unknown error\n", messageClass, messageId);
+			case OUT_OF_MEMORY: if (disp_err) printf("out of memory\n"); break;
+			default: if (disp_err) printf("MsgClass %X, msgId %X: unknown error\n", messageClass, messageId);
 		}
-
 	}
 }
 
@@ -1224,6 +1229,7 @@ void Gnss::cfgMsg() {
 			case NAV_ORB: sprintf(ids, "ORB"); break;
 			case NAV_POSECEF: sprintf(ids, "POSECEF"); break;
 			case NAV_POSLLH: sprintf(ids, "POSLLH"); break;
+			case NAV_PVT: sprintf(ids, "PVT"); break;
 			case NAV_RESETODO: sprintf(ids, "RESETODO"); break;
 			case NAV_SAT: sprintf(ids, "SAT"); break;
 			case NAV_SBAS: sprintf(ids, "SBAS"); break;
@@ -1311,6 +1317,7 @@ void Gnss::cfgMsg() {
 			case NAV_ORB: sprintf(ids, "ORB"); break;
 			case NAV_POSECEF: sprintf(ids, "POSECEF"); break;
 			case NAV_POSLLH: sprintf(ids, "POSLLH"); break;
+			case NAV_PVT: sprintf(ids, "PVT"); break;
 			case NAV_RESETODO: sprintf(ids, "RESETODO"); break;
 			case NAV_SAT: sprintf(ids, "SAT"); break;
 			case NAV_SBAS: sprintf(ids, "SBAS"); break;
