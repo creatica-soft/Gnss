@@ -1781,6 +1781,7 @@ public:
   Error error;
   bool nmea, nmeaChecksumNext, nmeaValid, endOfNavEpoch, isReady;
   bool cfgGnssOk, cfgInfOk, cfgLogfilterOk, cfgMsgOk, cfgNavOk, cfgOdoOk, cfgPmOk, cfgPmsOk, cfgPrtOk, cfgRateOk, cfgRxmOk, cfgSbasOk, cfgSlasOk, cfgTpOk, cfgNmeaOk, cfgGeofenceOk, cfgRstOk, cfgCfgOk, logCreateOk, logEraseOk, resetOdoOk;
+  bool disp_nav, disp_cfg, disp_tim, disp_nmea, disp_pubx, disp_err;
   string nmeaBuffer, nmeaPayload, nmeaChecksum, nmeaDate;
   time_t utcTime;
   UbxAck ubxAck, ubxNak;
