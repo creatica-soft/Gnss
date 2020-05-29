@@ -3,3 +3,18 @@ Supports both NMEA and u-blox protocols.
 Features extended help and autocomplete actions.
 Support practically all features documented by u-blox in protocol versions up to 18.
 Provides wire-level debugging options for UBX and NMEA as well as standard protocol debugging options for NMEA and UBX.
+Compile with g++ -O -o gps gps.cpp -lreadline
+
+Example usage:
+./gps
+> open com1 /dev/ttyAMA0 115200
+> display all off
+> ubxRate pvt 1
+> ubxRate tp 1
+> ubxRate clock 1
+> ubxRate timels 1
+> config save
+> exit
+
+The above example will configure GNSS receiver to send periodic 
+UBX-NAV-PVT UBX-NAV-CLOCK UBX-NAV-TIMELS and UBX-TIM-TP messages every second.
