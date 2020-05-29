@@ -36,9 +36,9 @@ typedef struct {
 void nmeaStandardMessages(void);
 void ubxStandardMessages(void);
 void getArguments(void);
-int close(const char * args);
-int quit(const char * args);
-int help(const char * args);
+int close(const char *);
+int quit(const char *);
+int help(const char *);
 int open(const char *);
 int version(const char *);
 int patches(const char *);
@@ -54,15 +54,17 @@ int set(const char *);
 int gnss(const char *);
 int config(const char *);
 int poll(const char *);
+int display(const char *);
 
 COMMAND commands[] = {
 	{ "close", NULL, NULL, close },
 	{ "config", "default load safe", NULL, config },
 	{ "debug", "nmea ubx", "on off", debug },
+	{ "display", "all cfg err nav nmea pubx tim", "on off", display },
 	{ "exit", NULL, NULL, quit },
 	{ "get", "accuracy cnoThreshold dgnssTimeout debug delay dop dynamicModel fixedAlt fixMode gnss logFilter logInfo minElev navRate nmea odo port pms pm rxm sbas staticHoldThresholds supportedGNSS timePulse utcStandard", NULL, get },
 	{ "gnss", "start stop reset", NULL, gnss },
-	{ "help", "close debug exit get open nmeaGnss nmeaGps nmeaGlonass nmeaBeidou nmeaRate quit ubxRate", NULL, help },
+	{ "help", "close debug display exit get open nmeaGnss nmeaGps nmeaGlonass nmeaBeidou nmeaRate quit ubxRate", NULL, help },
 	{ "open", "com1 com2 usb ddc spi", NULL, open },
 	{ "nmeaGnss", "dtm gbs gga ggl gns grs gsa gst gsv rmc vlw vtg zda", NULL, nmeaGnss },
 	{ "nmeaGps", "dtm gbs gga ggl gns grs gsa gst gsv rmc vlw vtg zda", NULL, nmeaGps },
@@ -206,6 +208,7 @@ int help(const char * cmd) {
 			printf("close\n");
 			printf("config <default|load|save>\n");
 			printf("debug <nmea|ubx> <on|off>\n");
+			printf("display <all|cfg|err|nav|nmea|pubx|tim> <on|off>\n");
 			printf("get <accuracy|cnoThreshold|dgnssTimeout|debug|delay|dop|dynamicModel|fixedAlt|fixMode|gnss|logFilter|logInfo|minElev|navRate|nmea|odo|port|pms|pm|rxm|sbas|staticHoldThresholds|supportedGNSS|timePulse|utcStandard>\n");
 			printf("gnss <start|stop|reset> [hot|warm|cold]\n");
 			printf("nmeaGnss <dtm|gbs|gga|ggl|gns|grs|gsa|gst|gsv|rmc|vlw|vtg|zda>\n");
@@ -228,6 +231,10 @@ int help(const char * cmd) {
 		else if (strncmp(cmd,"debug",5) == 0) {
 			printf("debug <nmea|ubx> <on|off>\n");
 			printf("  turn NMEA or U-BLOX wire message debugging on or off\n");
+		}
+		else if (strncmp(cmd, "display", 7) == 0) {
+			printf("display <all|ack|cfg|err|inf|log|mon|nav|nmea|pubx|tim> <on|off>\n");
+			printf("  display GNSS messages on STDOUT (on) or not (off)\n");
 		}
 		else if (strncmp(cmd, "get", 3) == 0) {
 			printf("get <accuracy|cnoThreshold|dgnssTimeout|debug|dop|dynamicModel|fixedAlt|fixMode|gnss|logFilter|logInfo|minElev|navRate|nmea|odo|port|pms|pm|rxm|sbas|staticHoldThresholds|supportedGNSS|timePulse|utcStandard>\n");
@@ -1376,6 +1383,111 @@ int debug(const char * args) {
 		printf("debug <nmea|ubx> <on|off>\n");
 		printf("  turn NMEA or U-BLOX wire messages debugging on or off\n");
 		return -1;
+	}
+	return 0;
+}
+
+int display(const char * args) {
+	char a[32];
+	int argc = 0;
+	char * argv;
+	enum MSG_CLASS : uint8_t {
+		MSG_CLASS_ALL,
+		MSG_CLASS_ACK,
+		MSG_CLASS_CFG,
+		MSG_CLASS_ERR,
+		MSG_CLASS_INF,
+		MSG_CLASS_LOG,
+		MSG_CLASS_MON,
+		MSG_CLASS_NAV,
+		MSG_CLASS_NMEA,
+		MSG_CLASS_PUBX,
+		MSG_CLASS_TIM
+	} msg_class;
+	bool disp_all = true, disp_nav = true, disp_cfg = true, disp_tim = true, disp_nmea = true, disp_pubx = true, disp_err = true;
+	bool on_off = true;
+
+	memset(a, 0, sizeof(a));
+	strncpy(a, args, sizeof(a));
+	argv = strtok(a, " ");
+
+	while (argv && argc < 2) {
+		switch (argc) {
+		case 0:
+			if (strncmp(argv, "all", 3) == 0) {
+				msg_class = MSG_CLASS_ALL;
+			}
+			else if (strncmp(argv, "cfg", 3) == 0) {
+				msg_class = MSG_CLASS_CFG;
+			}
+			else if (strncmp(argv, "err", 3) == 0) {
+				msg_class = MSG_CLASS_ERR;
+			}
+			else if (strncmp(argv, "nav", 3) == 0) {
+				msg_class = MSG_CLASS_NAV;
+			}
+			else if (strncmp(argv, "nmea", 3) == 0) {
+				msg_class = MSG_CLASS_NMEA;
+			}
+			else if (strncmp(argv, "pubx", 3) == 0) {
+				msg_class = MSG_CLASS_PUBX;
+			}
+			else if (strncmp(argv, "tim", 3) == 0) {
+				msg_class = MSG_CLASS_TIM;
+			}
+			else {
+				printf("display <all|cfg|err|nav|nmea|pubx|tim> <on|off>\n");
+				return -1;
+			}
+			break;
+		case 1:
+			if (strncmp(argv, "on", 2) == 0) {
+				on_off = true;
+			}
+			else if (strncmp(argv, "off", 3) == 0) {
+				on_off = false;
+			}
+			else {
+				printf("display <all|cfg|err|nav|nmea|pubx|tim> <on|off>\n");
+				return -1;
+			}
+			break;
+		}
+		argc++;
+		argv = strtok(NULL, " ");
+	}
+	if (argc < 2) {
+		printf("display <all|cfg|err|nav|nmea|pubx|tim> <on|off>\n");
+		printf("  display GNSS messages on STDOUT (on) or not (off)\n");
+		return -1;
+	}
+	switch (msg_class) {
+	case MSG_CLASS_ALL:
+		gps.disp_cfg = on_off;
+		gps.disp_err = on_off;
+		gps.disp_nav = on_off;
+		gps.disp_nmea = on_off;
+		gps.disp_pubx = on_off;
+		gps.disp_tim = on_off;
+		break;
+	case MSG_CLASS_CFG:
+		gps.disp_cfg = on_off;
+		break;
+	case MSG_CLASS_ERR:
+		gps.disp_err = on_off;
+		break;
+	case MSG_CLASS_NAV:
+		gps.disp_nav = on_off;
+		break;
+	case MSG_CLASS_NMEA:
+		gps.disp_nmea = on_off;
+		break;
+	case MSG_CLASS_PUBX:
+		gps.disp_pubx = on_off;
+		break;
+	case MSG_CLASS_TIM:
+		gps.disp_tim = on_off;
+		break;
 	}
 	return 0;
 }
