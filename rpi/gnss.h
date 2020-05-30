@@ -1840,6 +1840,7 @@ public:
   void navDgps();
   void navDop();
   void navGeoFence();
+  void navEoe();
   void navOdo();
   void navOrb();
   void navPosEcef();
@@ -2049,4 +2050,3 @@ void split(string msg[], uint8_t array_size, string pload);
 tm * gps2tm(DateTime * dt, tm * time_tm);
 char * humanTime(uint32_t time, char * htime);
 void delay(int sec = defaultDelay);
-
