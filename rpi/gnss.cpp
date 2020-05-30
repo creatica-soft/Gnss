@@ -267,11 +267,6 @@ bool Gnss::ready() {
 			  offset = 0;
 			  if (DEBUG_UBX) printf(", chksum1 %X\n", c);
 			  if (c == checksum.checksum1)	{
-				if (messageClass == UBX_NAV && messageId == NAV_EOE) { 
-					//printf("end of nav epoch\n");
-					endOfNavEpoch = true; 
-					iTOW = *(uint32_t *)buffer;
-				}
 				error = NO_ERROR;
 				payload = (uint8_t *)malloc(payloadLength);
 				if (payload == NULL && payloadLength > 0) { offset = 0; error = OUT_OF_MEMORY; return true; }
@@ -406,7 +401,7 @@ void Gnss::get() {
 			case UBX_NAV:
 				if (!disp_nav) break;
 				switch (messageId) {
-				case NAV_EOE: break;
+				case NAV_EOE: navEoe();  break;
 				case NAV_CLOCK: navClock(); break;
 				case NAV_DGPS: navDgps(); break;
 				case NAV_DOP: navDop(); break;
@@ -560,6 +555,12 @@ void Gnss::navDop() {
 	gnssNavDop = *((NavDOP *)payload);
 	printf("DOP iTOW %u, gDOP %u, pDOP %u, tDOP %u, vDOP %u, hDOP %u, nDOP %u, eDOP %u 10^-2\n", gnssNavDop.iTOW, gnssNavDop.gDOP, gnssNavDop.pDOP, gnssNavDop.tDOP, gnssNavDop.vDOP, gnssNavDop.hDOP, gnssNavDop.nDOP, gnssNavDop.eDOP);
   free(payload);
+}
+
+void Gnss::navEoe() {
+	endOfNavEpoch = true;
+	iTOW = *(uint32_t *)payload;
+	printf("End of nav epoch, iTOW %u\n", iTOW);
 }
 
 void Gnss::navGeoFence() {
