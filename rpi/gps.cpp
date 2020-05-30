@@ -73,7 +73,7 @@ COMMAND commands[] = {
 	{ "nmeaRate", "dtm gbs gga ggl gns grs gsa gst gsv rmc vlw vtg zda", NULL, nmeaRate },
 	{ "poll", "clock dgps dop geofence odo orb posecef posllh pvt sat sbas slas status timebds timegal timeglo timegps timels timeutc tm tp velecef velned", NULL, poll },
 	{ "set", "accuracy cnoThreshold dgnssTimeout debug delay dop dynamicModel fixedAlt fixMode gnss logFilter minElev navRate nmea odo port pms pm rxm sbas staticHoldThresholds utcStandard", NULL, set },
-	{ "ubxRate", "clock dgps dop geofence odo orb posecef posllh pvt pubx_position pubx_time sat sbas slas status timebds timegal timeglo timegps timels timeutc tm tp velecef velned", NULL, ubxRate },
+	{ "ubxRate", "clock dgps dop eoe geofence odo orb posecef posllh pvt pubx_position pubx_time sat sbas slas status timebds timegal timeglo timegps timels timeutc tm tp velecef velned", NULL, ubxRate },
 	{ "quit", NULL, NULL, quit },
 	{ "version", NULL, NULL, version },
 	{ "patches", NULL, NULL, patches },
@@ -219,7 +219,7 @@ int help(const char * cmd) {
 			printf("open <com1|com2|usb|spi|ddc> <dev> [4800|9600|19200|38400|57600|115200|230400] [reset] [hard]\n");
 			printf("poll <clock|dgps|dop|geofence|odo|orb|posecef|posllh|pvt|sat|sbas|slas|status|timebds|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
 			printf("set <accuracy|cnoThreshold|dgnssTimeout|debug|delay|dop|dynamicModel|fixedAlt|fixMode|gnss|logFilter|minElev|navRate|nmea|odo|port|pms|pm|rxm|sbas|staticHoldThresholds|utcStandard> ...\n");
-			printf("ubxRate <clock|dgps|dop|geofence|odo|orb|posecef|posllh|pvt|pubx_position|pubx_time|sat|sbas|slas|status|timebds|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
+			printf("ubxRate <clock|dgps|dop|eoe|geofence|odo|orb|posecef|posllh|pvt|pubx_position|pubx_time|sat|sbas|slas|status|timebds|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
 			printf("patches\n");
 			printf("quit\n");
 			printf("version\n");
@@ -287,7 +287,7 @@ int help(const char * cmd) {
 			nmeaStandardMessages();
 		}
 		else if (strncmp(cmd, "ubxRate", 7) == 0) {
-			printf("ubxRate <clock|dgps|dop|geofence|odo|orb|posecef|posllh|pvt|pubx_position|pubx_time|sat|sbas|slas|status|timebds|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
+			printf("ubxRate <clock|dgps|dop|eoe|geofence|odo|orb|posecef|posllh|pvt|pubx_position|pubx_time|sat|sbas|slas|status|timebds|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
 			printf("  sets the rate for a given U-BLOX standard message\n");
 			printf("  - 1 means send a message every navigation solution\n");
 			printf("  - 2 means - every second navigation solution, etc\n");
@@ -1863,6 +1863,7 @@ int ubxRate(const char * args) {
 			else if (strncmp(argv, "dgps", 4) == 0) msgId = NAV_DGPS;
 			else if (strncmp(argv, "dop", 3) == 0) msgId = NAV_DOP;
 			else if (strncmp(argv, "geofence", 8) == 0) msgId = NAV_GEOFENCE;
+			else if (strncmp(argv, "eoe", 3) == 0) msgId = NAV_EOE;
 			else if (strncmp(argv, "odo", 3) == 0) msgId = NAV_ODO;
 			else if (strncmp(argv, "orb", 3) == 0) msgId = NAV_ORB;
 			else if (strncmp(argv, "posecef", 7) == 0) msgId = NAV_POSECEF;
@@ -1899,7 +1900,7 @@ int ubxRate(const char * args) {
 		argv = strtok(NULL, " ");
 	}
 	if (argc < 1) {
-		printf("ubxRate <clock|dgps|dop|geofence|odo|orb|posecef|posllh|pvt|pubx_position|pubx_time|sat|sbas|slas|status|timedbs|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
+		printf("ubxRate <clock|dgps|dop|eoe|geofence|odo|orb|posecef|posllh|pvt|pubx_position|pubx_time|sat|sbas|slas|status|timedbs|timegal|timeglo|timegps|timels|timeutc|tm|tp|velecef|velned> [rate]\n");
 		printf("  sets the rate for a given U-BLOX standard message on a given GNSS port\n");
 		printf("  - 1 means send a message every navigation solution\n");
 		printf("  - 2 means - every second navigation solution, etc\n");
