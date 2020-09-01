@@ -9,7 +9,7 @@
 #include <sys/types.h>
 #include <readline/readline.h>
 #include <readline/history.h>
-#include "gnss.cpp"
+#include "gnss.h"
 
 using namespace std;
 #include <regex>
@@ -22,7 +22,8 @@ using namespace std;
 Port gnssPort = COM1;
 uint32_t gnssPortRate = 9600;
 const uint8_t navRate = 1;
-
+int defaultDelay = 1;
+bool DEBUG_UBX = false, DEBUG_NMEA = false;
 
 typedef int command_function_type(const char *);
 
