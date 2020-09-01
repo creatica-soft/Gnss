@@ -18,8 +18,8 @@ const uint32_t GPS_UNIX_DIFF = 315964800;
 //const uint32_t UNIX_OFFSET = 946684800;
 const uint32_t ONE_DAY = 86400;
 //const uint32_t ONE_HOUR = 3600; //it is preferred to use const like
-int defaultDelay = 1;
-bool DEBUG_UBX = false, DEBUG_NMEA = false;
+extern int defaultDelay;
+extern bool DEBUG_UBX, DEBUG_NMEA;
 const uint16_t maxNumberOfPatches = 10;
 const uint8_t maxNumberOfGnss = 7;
 const uint8_t maxNumberOfGeoFences = 4;
