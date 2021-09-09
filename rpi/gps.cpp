@@ -1,6 +1,6 @@
 
 //compile with 
-//g++ -O3 -c -o gnss.o gnss.cpp
+//g++ -O3 -c -o libgnss.o gnss.cpp
 //ar rcs libgnss.a libgnss.o
 //g++ -O3 -o gps gps.cpp -lreadline -L . -lgnss
 //of use GNU build system (configure, make, make install) if you download the release
