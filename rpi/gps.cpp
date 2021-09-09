@@ -92,6 +92,7 @@ uint32_t tRateToI(speed_t r) {
 	case B115200: return 115200;
 	case B230400: return 230400;
 	}
+	return 0;
 }
 
 int8_t setup(const char * dev, speed_t rate, bool reset, bool soft) {
